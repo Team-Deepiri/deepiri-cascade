@@ -1,0 +1,60 @@
+name: Cascade Update
+
+on:
+  repository_dispatch:
+    types: [cascade-trigger]
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'Repository name'
+        required: true
+      tag:
+        description: 'Version tag'
+        required: true
+
+env:
+  ORG: team-deepiri
+  CASCADE_REPO: deepiri-cascade
+
+permissions:
+  contents: write
+
+jobs:
+  cascade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -e .
+          pip install rich httpx gitpython tomli
+
+      - name: Get cascade info
+        id: info
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            REPO="${{ github.event.client_payload.repo }}"
+            TAG="${{ github.event.client_payload.tag }}"
+          else
+            REPO="${{ github.inputs.repo }}"
+            TAG="${{ github.inputs.tag }}"
+          fi
+          echo "repo=$REPO" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Run cascade
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          deepiri-cascade cascade \
+            --repo "${{ steps.info.outputs.repo }}" \
+            --tag "${{ steps.info.outputs.tag }}" \
+            --org ${{ env.ORG }} \
+            --bump-type patch \
+            --no-confirm

@@ -1,0 +1,11 @@
+name = "deepiri-cascade"
+main = "worker/index.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+ORG = "team-deepiri"
+TARGET_REPO = "deepiri-cascade"
+
+[secrets]
+GITHUB_APP_ID
+GITHUB_APP_PRIVATE_KEY

@@ -1,0 +1,118 @@
+name: Tag Monitor
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+env:
+  ORG: team-deepiri
+  CASCADE_REPO: deepiri-cascade
+
+permissions:
+  contents: write
+
+jobs:
+  check-tags:
+    runs-on: ubuntu-latest
+    outputs:
+      tags_json: ${{ steps.check.outputs.tags_json }}
+    steps:
+      - name: Check for new tags
+        id: check
+        run: |
+          python3 << 'EOF'
+          import os
+          import json
+          import httpx
+          
+          org = os.environ["ORG"]
+          token = os.environ["GITHUB_TOKEN"]
+          
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+          
+          state_file = os.environ.get("GITHUB_STATE_FILE", "/tmp/tag_state.json")
+          
+          # Load previous state
+          old_state = {}
+          try:
+              with open(state_file) as f:
+                  old_state = json.load(f)
+          except:
+              pass
+          
+          # Get all repos
+          repos = []
+          page = 1
+          while True:
+              url = f"https://api.github.com/orgs/{org}/repos"
+              resp = httpx.get(url, headers=headers, params={"page": page, "per_page": 100, "type": "all"}, timeout=30)
+              if resp.status_code != 200:
+                  break
+              data = resp.json()
+              if not data:
+                  break
+              repos.extend([r["name"] for r in data])
+              page += 1
+          
+          new_tags = []
+          current_state = {}
+          
+          # Check each repo for latest tag
+          for repo in repos:
+              url = f"https://api.github.com/repos/{org}/{repo}/tags"
+              resp = httpx.get(url, headers=headers, params={"per_page": 1}, timeout=10)
+              if resp.status_code == 200:
+                  tags = resp.json()
+                  if tags:
+                      tag = tags[0]["name"]
+                      current_state[repo] = tag
+                      if repo in old_state:
+                          if tag != old_state[repo]:
+                              new_tags.append({"repo": repo, "tag": tag})
+                              print(f"New tag: {repo}: {tag}")
+                      else:
+                          print(f"First tag for {repo}: {tag}")
+          
+          # Output tags
+          tags_json = json.dumps(new_tags)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"tags_json={tags_json}\n")
+          
+          # Save state
+          with open(state_file, "w") as f:
+              json.dump(current_state, f)
+          
+          print(f"New tags found: {len(new_tags)}")
+          EOF
+
+      - name: Save state
+        run: |
+          echo '${{ steps.check.outputs.tags_json }}' > tag_state.json
+          cat tag_state.json
+
+  cascade:
+    needs: check-tags
+    if: ${{ fromJson(needs.check-tags.outputs.tags_json).length > 0 }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.check-tags.outputs.tags_json) }}
+    steps:
+      - name: Trigger cascade for ${{ matrix.repo }}
+        run: |
+          curl -X POST https://api.github.com/repos/${{ env.ORG }}/${{ env.CASCADE_REPO }}/dispatches \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "event_type": "cascade-trigger",
+              "client_payload": {
+                "repo": "${{ matrix.repo }}",
+                "tag": "${{ matrix.tag }}"
+              }
+            }'

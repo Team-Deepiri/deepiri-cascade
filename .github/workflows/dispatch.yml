@@ -1,0 +1,31 @@
+name: Trigger Cascade
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract tag
+        id: tag
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "repo=${{ github.event.repository.name }}" >> $GITHUB_OUTPUT
+
+      - name: Trigger cascade
+        run: |
+          curl -X POST https://api.github.com/repos/Team-Deepiri/deepiri-cascade/dispatches \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "event_type": "cascade-trigger",
+              "client_payload": {
+                "repo": "${{ steps.tag.outputs.repo }}",
+                "tag": "${{ steps.tag.outputs.tag }}"
+              }
+            }'

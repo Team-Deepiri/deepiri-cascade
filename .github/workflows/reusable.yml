@@ -1,0 +1,39 @@
+name: Reusable Cascade
+
+on:
+  workflow_call:
+    secrets:
+      GITHUB_TOKEN:
+        required: true
+    inputs:
+      repo:
+        required: true
+      tag:
+        required: true
+
+jobs:
+  cascade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -e .
+          pip install rich httpx gitpython tomli
+
+      - name: Run cascade
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          deepiri-cascade cascade \
+            --repo "${{ inputs.repo }}" \
+            --tag "${{ inputs.tag }}" \
+            --org team-deepiri \
+            --bump-type patch \
+            --no-confirm
