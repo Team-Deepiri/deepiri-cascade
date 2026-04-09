@@ -118,15 +118,16 @@ function createJWT(appId, privateKeyPem) {
   if (!privateKeyPem) throw new Error("Missing GITHUB_APP_PRIVATE_KEY");
 
   const now = Math.floor(Date.now() / 1000);
-  const header = btoa(JSON.stringify({ alg: "RS256", typ: "JWT" }));
-  const payload = btoa(JSON.stringify({ iss: parseInt(appId), iat: now, exp: now + 600 }));
+  const header = btoaCustom(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const payload = btoaCustom(JSON.stringify({ iss: parseInt(appId), iat: now, exp: now + 600 }));
   const message = `${header}.${payload}`;
 
   return signWithRSA(message, privateKeyPem);
 }
 
-function btoa(str) {
-  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+function btoaCustom(str) {
+  const encoded = btoa(str);
+  return encoded.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 async function signWithRSA(message, privateKeyPem) {
@@ -151,7 +152,7 @@ async function signWithRSA(message, privateKeyPem) {
     "RSASSA-PKCS1-v1_5", cryptoKey, new TextEncoder().encode(message)
   );
 
-  return `${message}.${btoa(String.fromCharCode(...new Uint8Array(signature)))}`;
+  return `${message}.${btoaCustom(String.fromCharCode(...new Uint8Array(signature)))}`;
 }
 
 async function getInstallationToken(jwt) {
