@@ -22,15 +22,16 @@ def main(ctx):
 @click.option("--dry-run", is_flag=True, help="Preview changes without making updates")
 @click.option("--no-confirm", is_flag=True, help="Skip confirmation prompt")
 @click.option("--work-dir", default="/tmp/deepiri-cascade", help="Working directory for git operations")
+@click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
 @click.pass_context
-def cascade(ctx, repo, tag, org, token, bump_type, dry_run, no_confirm, work_dir):
+def cascade(ctx, repo, tag, org, token, bump_type, dry_run, no_confirm, work_dir, verbose):
     """Run cascade update for a tagged release."""
     from .auto_detect import detect_repo_and_tag
     from .github_auth import get_token
     from .discovery import Discovery
     from .cascade import CascadeProcessor
 
-    verbose = ctx.obj.get("verbose", False)
+    verbose = ctx.obj.get("verbose") or verbose
 
     if not token:
         token = get_token()
