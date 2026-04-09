@@ -7,7 +7,7 @@ console = Console()
 @click.group()
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
 @click.pass_context
-def main(ctx):
+def main(ctx, verbose):
     """Deepiri Cascade - Cascade version updates across Deepiri repos."""
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
