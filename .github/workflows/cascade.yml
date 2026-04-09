@@ -18,6 +18,7 @@ env:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   cascade:
@@ -33,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e .
-          pip install rich httpx gitpython tomli
+          pip install rich httpx gitpython tomli networkx
 
       - name: Get cascade info
         id: info
@@ -57,4 +58,5 @@ jobs:
             --tag "${{ steps.info.outputs.tag }}" \
             --org ${{ env.ORG }} \
             --bump-type patch \
-            --no-confirm
+            --no-confirm \
+            --verbose

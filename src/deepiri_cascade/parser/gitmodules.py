@@ -1,5 +1,6 @@
 """Parser for .gitmodules files."""
 import re
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -62,3 +63,72 @@ def get_submodule_url(path: Path, submodule_name: str) -> Optional[str]:
     """Get the URL for a specific submodule."""
     deps = parse_gitmodules(path)
     return deps.get(submodule_name)
+
+
+def update_submodule_ref(repo_path: Path, submodule_path: str, new_ref: str) -> bool:
+    """Update a submodule to point to a new ref (tag/branch/commit).
+    
+    Args:
+        repo_path: Path to the parent repo
+        submodule_path: Relative path to the submodule (e.g., "libs/deepiri-shared")
+        new_ref: The new ref to checkout (tag, branch, or commit SHA)
+    
+    Returns:
+        True if update was successful, False otherwise
+    """
+    submodule_full_path = repo_path / submodule_path
+    
+    try:
+        subprocess.run(
+            ["git", "fetch", "--tags", "--force"],
+            cwd=submodule_full_path,
+            capture_output=True,
+            timeout=60,
+        )
+        
+        result = subprocess.run(
+            ["git", "checkout", new_ref],
+            cwd=submodule_full_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        
+        if result.returncode != 0:
+            if "did not match" in result.stderr or "failed" in result.stderr:
+                result = subprocess.run(
+                    ["git", "checkout", "-f", new_ref],
+                    cwd=submodule_full_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if result.returncode != 0:
+                    return False
+            else:
+                return False
+        
+        return True
+        
+    except Exception:
+        return False
+
+
+def get_submodule_current_ref(repo_path: Path, submodule_path: str) -> Optional[str]:
+    """Get the current ref (commit SHA) that a submodule points to."""
+    submodule_full_path = repo_path / submodule_path
+    
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=submodule_full_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()[:8]
+    except Exception:
+        pass
+    
+    return None

@@ -6,6 +6,11 @@ from typing import Dict, List, Set, Optional
 import tempfile
 import shutil
 
+from deepiri_pkg_version_manager.scanners.repo_scanner import (
+    is_internal_dep,
+    normalize_package_name,
+)
+
 from .parser import npm, poetry, gitmodules
 
 
@@ -73,6 +78,46 @@ class Discovery:
 
         return None
 
+    def get_tag_sha(self, repo_name: str, tag: str) -> Optional[str]:
+        """Get the commit SHA that a tag points to.
+        
+        Args:
+            repo_name: Repository name
+            tag: Tag name (e.g., "v1.2.3")
+        
+        Returns:
+            Commit SHA or None if not found
+        """
+        url = f"https://api.github.com/repos/{self.org}/{repo_name}/git/ref/tags/{tag}"
+        response = httpx.get(url, headers=self.headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if "object" in data and "sha" in data["object"]:
+                return data["object"]["sha"]
+        
+        return None
+
+    def get_tag_sha_direct(self, repo_name: str, tag: str) -> Optional[str]:
+        """Get commit SHA directly from tag object.
+        
+        Args:
+            repo_name: Repository name
+            tag: Tag name (e.g., "v1.2.3")
+        
+        Returns:
+            Commit SHA or None if not found
+        """
+        url = f"https://api.github.com/repos/{self.org}/{repo_name}/git/tags/{tag}"
+        response = httpx.get(url, headers=self.headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if "object" in data and "sha" in data["object"]:
+                return data["object"]["sha"]
+        
+        return None
+
     def parse_dependencies(self, repo_name: str) -> Dict[str, str]:
         """Parse dependencies from a repo's package files."""
         if repo_name in self._deps_cache:
@@ -85,21 +130,30 @@ class Discovery:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
                 f.write(package_json)
                 f.flush()
-                deps.update(npm.parse_package_json(Path(f.name)))
+                parsed = npm.parse_package_json(Path(f.name))
+                for name, version in parsed.items():
+                    normalized = normalize_package_name(name)
+                    if is_internal_dep(normalized):
+                        deps[name] = version
 
         pyproject_toml = self.fetch_file_content(repo_name, "pyproject.toml")
         if pyproject_toml:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
                 f.write(pyproject_toml)
                 f.flush()
-                deps.update(poetry.parse_pyproject_toml(Path(f.name)))
+                parsed = poetry.parse_pyproject_toml(Path(f.name))
+                for name, dep_repo in parsed.items():
+                    if is_internal_dep(name):
+                        deps[name] = dep_repo
 
         gitmodules_content = self.fetch_file_content(repo_name, ".gitmodules")
         if gitmodules_content:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".gitmodules", delete=False) as f:
                 f.write(gitmodules_content)
                 f.flush()
-                deps.update(gitmodules.parse_gitmodules(Path(f.name)))
+                parsed = gitmodules.parse_gitmodules(Path(f.name))
+                for submodule_path, dep_repo in parsed.items():
+                    deps[submodule_path] = dep_repo
 
         self._deps_cache[repo_name] = deps
         return deps
