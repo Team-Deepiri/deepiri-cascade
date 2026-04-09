@@ -1,3 +1,7 @@
 name = "deepiri-cascade"
 main = "index.js"
 compatibility_date = "2024-01-01"
+
+[vars]
+ORG = "team-deepiri"
+TARGET_REPO = "deepiri-cascade"

@@ -18,82 +18,107 @@ jobs:
     outputs:
       tags_json: ${{ steps.check.outputs.tags_json }}
     steps:
+      - name: Restore tag state
+        uses: actions/cache@v4
+        with:
+          path: tag_state.json
+          key: tag-state-${{ github.run_id }}
+          restore-keys: |
+            tag-state-
+
       - name: Check for new tags
         id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 << 'EOF'
           import os
           import json
-          import httpx
-          
+          import urllib.request
+
           org = os.environ["ORG"]
           token = os.environ["GITHUB_TOKEN"]
-          
+
           headers = {
               "Authorization": f"Bearer {token}",
               "Accept": "application/vnd.github+json",
               "X-GitHub-Api-Version": "2022-11-28",
           }
-          
-          state_file = os.environ.get("GITHUB_STATE_FILE", "/tmp/tag_state.json")
-          
+
+          def gh_get(url, params=None):
+              if params:
+                  query = "&".join(f"{k}={v}" for k, v in params.items())
+                  url = f"{url}?{query}"
+              req = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  return json.loads(resp.read())
+
+          state_file = "tag_state.json"
+
           # Load previous state
           old_state = {}
           try:
               with open(state_file) as f:
                   old_state = json.load(f)
-          except:
+          except Exception:
               pass
-          
+
           # Get all repos
           repos = []
           page = 1
           while True:
-              url = f"https://api.github.com/orgs/{org}/repos"
-              resp = httpx.get(url, headers=headers, params={"page": page, "per_page": 100, "type": "all"}, timeout=30)
-              if resp.status_code != 200:
+              try:
+                  data = gh_get(
+                      f"https://api.github.com/orgs/{org}/repos",
+                      {"page": page, "per_page": 100, "type": "all"},
+                  )
+              except Exception:
                   break
-              data = resp.json()
               if not data:
                   break
               repos.extend([r["name"] for r in data])
               page += 1
-          
+
           new_tags = []
           current_state = {}
-          
+
           # Check each repo for latest tag
           for repo in repos:
-              url = f"https://api.github.com/repos/{org}/{repo}/tags"
-              resp = httpx.get(url, headers=headers, params={"per_page": 1}, timeout=10)
-              if resp.status_code == 200:
-                  tags = resp.json()
-                  if tags:
-                      tag = tags[0]["name"]
-                      current_state[repo] = tag
-                      if repo in old_state:
-                          if tag != old_state[repo]:
-                              new_tags.append({"repo": repo, "tag": tag})
-                              print(f"New tag: {repo}: {tag}")
-                      else:
-                          print(f"First tag for {repo}: {tag}")
-          
+              try:
+                  tags = gh_get(
+                      f"https://api.github.com/repos/{org}/{repo}/tags",
+                      {"per_page": 1},
+                  )
+              except Exception:
+                  continue
+              if tags:
+                  tag = tags[0]["name"]
+                  current_state[repo] = tag
+                  if repo in old_state:
+                      if tag != old_state[repo]:
+                          new_tags.append({"repo": repo, "tag": tag})
+                          print(f"New tag: {repo}: {tag}")
+                  else:
+                      print(f"First seen tag for {repo}: {tag}")
+
           # Output tags
           tags_json = json.dumps(new_tags)
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"tags_json={tags_json}\n")
-          
-          # Save state
+
+          # Save state for next run
           with open(state_file, "w") as f:
               json.dump(current_state, f)
-          
+
           print(f"New tags found: {len(new_tags)}")
           EOF
 
-      - name: Save state
-        run: |
-          echo '${{ steps.check.outputs.tags_json }}' > tag_state.json
-          cat tag_state.json
+      - name: Save tag state
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: tag_state.json
+          key: tag-state-${{ github.run_id }}
 
   cascade:
     needs: check-tags

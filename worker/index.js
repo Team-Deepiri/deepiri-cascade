@@ -1,7 +1,5 @@
 /**
  * deepiri-cascade Cloudflare Worker
- * 
- * Receives GitHub App webhooks for tag pushes and triggers cascade workflow.
  */
 
 const GITHUB_API = "https://api.github.com";
@@ -11,6 +9,10 @@ const EVENT_TYPE = "cascade-trigger";
 
 export default {
   async fetch(request, env) {
+    console.log("=== Webhook received ===");
+    console.log("Method:", request.method);
+    console.log("URL:", request.url);
+
     if (request.method === "GET") {
       return new Response("deepiri-cascade worker running", { status: 200 });
     }
@@ -22,23 +24,32 @@ export default {
     try {
       const payload = await request.json();
       const eventType = request.headers.get("X-GitHub-Event");
+      const delivery = request.headers.get("X-GitHub-Delivery");
 
-      console.log("Received event:", eventType);
+      console.log("Event:", eventType);
+      console.log("Delivery:", delivery);
+      console.log("Payload keys:", Object.keys(payload));
 
       if (eventType === "push") {
+        console.log("Push event - ref:", payload.ref);
+        console.log("Push event - repo:", payload.repository?.name);
+        
         const result = handleTagPush(payload);
+        console.log("Result:", JSON.stringify(result));
         
         if (result.shouldCascade) {
-          console.log(`Triggering cascade for ${result.repo} ${result.tag}`);
+          console.log(`>>> Triggering cascade for ${result.repo} ${result.tag}`);
           
-          await triggerCascade(env, result.repo, result.tag);
+          try {
+            await triggerCascade(env, result.repo, result.tag);
+            console.log(">>> Cascade triggered OK");
+          } catch (err) {
+            console.error(">>> Cascade trigger FAILED:", err.message);
+          }
           
-          return new Response(JSON.stringify({
-            success: true,
-            cascade: result
-          }), { status: 200 });
+          return new Response(JSON.stringify({ success: true, cascade: result }), { status: 200 });
         } else {
-          console.log("Skipped:", result.reason);
+          console.log(">>> Skipped:", result.reason);
           return new Response(JSON.stringify({ skipped: result.reason }), { status: 200 });
         }
       }
@@ -46,7 +57,8 @@ export default {
       return new Response(JSON.stringify({ received: true, event: eventType }), { status: 200 });
 
     } catch (error) {
-      console.error("Error:", error.message);
+      console.error("ERROR:", error.message);
+      console.error(error.stack);
       return new Response(error.message, { status: 500 });
     }
   }
@@ -56,23 +68,30 @@ function handleTagPush(payload) {
   const ref = payload.ref || "";
   const repo = payload.repository?.name || "";
   
+  console.log("Checking ref:", ref);
+  
   if (!ref.startsWith("refs/tags/")) {
-    return { shouldCascade: false, reason: "not a tag" };
+    return { shouldCascade: false, reason: "not a tag ref" };
   }
 
   const tag = ref.replace("refs/tags/", "");
+  console.log("Tag:", tag);
   
   if (!tag.match(/^v\d+\.\d+\.\d+/)) {
-    return { shouldCascade: false, reason: "not a version tag" };
+    return { shouldCascade: false, reason: "not a version tag (need vX.Y.Z)" };
   }
 
   return { shouldCascade: true, repo: repo, tag: tag };
 }
 
 async function triggerCascade(env, repo, tag) {
+  console.log("Creating JWT...");
   const jwt = createJWT(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
+  
+  console.log("Getting installation token...");
   const installToken = await getInstallationToken(jwt);
   
+  console.log("Calling GitHub API to trigger dispatch...");
   const response = await fetch(`${GITHUB_API}/repos/${ORG}/${TARGET_REPO}/dispatches`, {
     method: "POST",
     headers: {
@@ -88,16 +107,15 @@ async function triggerCascade(env, repo, tag) {
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`Failed to trigger cascade: ${response.status} - ${error}`);
+    throw new Error(`API error ${response.status}: ${error}`);
   }
 
-  console.log("Cascade triggered successfully");
+  console.log("Dispatch triggered!");
 }
 
 function createJWT(appId, privateKeyPem) {
-  if (!appId || !privateKeyPem) {
-    throw new Error("Missing GITHUB_APP_ID or GITHUB_APP_PRIVATE_KEY");
-  }
+  if (!appId) throw new Error("Missing GITHUB_APP_ID");
+  if (!privateKeyPem) throw new Error("Missing GITHUB_APP_PRIVATE_KEY");
 
   const now = Math.floor(Date.now() / 1000);
   const header = btoa(JSON.stringify({ alg: "RS256", typ: "JWT" }));
@@ -142,12 +160,14 @@ async function getInstallationToken(jwt) {
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to get installations: ${response.status}`);
+    throw new Error(`Get installations failed: ${response.status}`);
   }
 
   const installations = await response.json();
+  console.log("Installations:", JSON.stringify(installations));
+  
   if (!installations || installations.length === 0) {
-    throw new Error("No installations found");
+    throw new Error("No installations found - is the App installed on the org?");
   }
 
   const tokenResponse = await fetch(`${GITHUB_API}/app/installations/${installations[0].id}/access_tokens`, {
@@ -157,7 +177,7 @@ async function getInstallationToken(jwt) {
   });
 
   if (!tokenResponse.ok) {
-    throw new Error(`Failed to get access token: ${tokenResponse.status}`);
+    throw new Error(`Get token failed: ${tokenResponse.status}`);
   }
 
   return (await tokenResponse.json()).token;
