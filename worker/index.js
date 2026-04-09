@@ -69,8 +69,8 @@ async function triggerCascade(env, repo, tag) {
   const response = await fetch(`${GITHUB_API}/repos/${ORG}/${TARGET_REPO}/dispatches`, {
     method: "POST",
     headers: {
+      ...GH_HEADERS,
       "Authorization": `Bearer ${installToken}`,
-      "Accept": "application/vnd.github+json",
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
@@ -128,9 +128,14 @@ async function signWithRSA(message, privateKeyPem) {
   return `${message}.${base64url(String.fromCharCode(...new Uint8Array(signature)))}`;
 }
 
+const GH_HEADERS = {
+  "Accept": "application/vnd.github+json",
+  "User-Agent": "deepiri-cascade-worker/1.0",
+};
+
 async function getInstallationToken(jwt) {
   const response = await fetch(`${GITHUB_API}/app/installations`, {
-    headers: { "Authorization": `Bearer ${jwt}`, "Accept": "application/vnd.github+json" }
+    headers: { ...GH_HEADERS, "Authorization": `Bearer ${jwt}` }
   });
 
   if (!response.ok) {
@@ -145,7 +150,7 @@ async function getInstallationToken(jwt) {
 
   const tokenResponse = await fetch(`${GITHUB_API}/app/installations/${installations[0].id}/access_tokens`, {
     method: "POST",
-    headers: { "Authorization": `Bearer ${jwt}`, "Accept": "application/vnd.github+json" },
+    headers: { ...GH_HEADERS, "Authorization": `Bearer ${jwt}` },
     body: JSON.stringify({})
   });
 
