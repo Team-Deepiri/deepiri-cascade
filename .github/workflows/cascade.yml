@@ -58,5 +58,4 @@ jobs:
             --tag "${{ steps.info.outputs.tag }}" \
             --org ${{ env.ORG }} \
             --bump-type patch \
-            --no-confirm \
-            --verbose
+            --no-confirm
