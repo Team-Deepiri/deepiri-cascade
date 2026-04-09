@@ -30,7 +30,7 @@ def cascade(ctx, repo, tag, org, token, bump_type, dry_run, no_confirm, work_dir
     from .discovery import Discovery
     from .cascade import CascadeProcessor
 
-    verbose = ctx.obj.get("verbose") or verbose
+    verbose = ctx.obj.get("verbose", False)
 
     if not token:
         token = get_token()
