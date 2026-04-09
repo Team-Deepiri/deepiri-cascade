@@ -23,6 +23,16 @@ export default {
 
       console.log("Event:", eventType, "Delivery:", request.headers.get("X-GitHub-Delivery"));
 
+      if (eventType === "repository_dispatch") {
+        console.log(
+          "repository_dispatch (echo only; cascade runs in GitHub Actions on deepiri-cascade):",
+          "action=",
+          payload.action,
+          "client_payload=",
+          JSON.stringify(payload.client_payload || {})
+        );
+      }
+
       if (eventType === "create") {
         const { ref_type, ref, repository } = payload;
         const repo = repository?.name || "";
@@ -39,7 +49,15 @@ export default {
 
         console.log(`>>> Triggering cascade for ${repo} ${ref}`);
         try {
-          await triggerCascade(env, repo, ref);
+          const jwt = await createJWT(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
+          const installToken = await getInstallationToken(jwt);
+          console.log("[cascade-preview] Scanning org repos for direct dependents (npm / poetry / gitmodules)...");
+          const dependents = await fetchDependentsPreview(installToken, ORG, repo);
+          console.log(
+            `[cascade-preview] ${repo}@${ref} → ${dependents.length} dependent repo(s): ` +
+              (dependents.length ? dependents.join(", ") : "(none — Action will also build graph; if this is empty, check npm scope @team-deepiri/ vs @deepiri/)")
+          );
+          await triggerCascadeDispatch(installToken, repo, ref);
           console.log(">>> Cascade triggered OK");
         } catch (err) {
           console.error(">>> Cascade trigger FAILED:", err.message);
@@ -58,13 +76,84 @@ export default {
   }
 };
 
-async function triggerCascade(env, repo, tag) {
-  console.log("Creating JWT...");
-  const jwt = await createJWT(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
+/**
+ * Best-effort mirror of deepiri-cascade Discovery: list org repos that directly
+ * depend on sourceRepo (for wrangler tail debugging). The GitHub Action still
+ * builds the authoritative graph.
+ */
+async function fetchDependentsPreview(token, org, sourceRepo) {
+  const headers = { ...GH_HEADERS, Authorization: `Bearer ${token}` };
+  const repoNames = [];
+  for (let page = 1; page <= 20; page++) {
+    const res = await fetch(
+      `${GITHUB_API}/orgs/${org}/repos?per_page=100&page=${page}&sort=updated`,
+      { headers }
+    );
+    if (!res.ok) {
+      console.log("[cascade-preview] list org repos failed:", res.status, await res.text());
+      return [];
+    }
+    const batch = await res.json();
+    if (!batch.length) break;
+    repoNames.push(...batch.map((r) => r.name));
+  }
 
-  console.log("Getting installation token...");
-  const installToken = await getInstallationToken(jwt);
+  const scopedKey = `@${org}/${sourceRepo}`;
+  const legacyKey = `@deepiri/${sourceRepo}`;
+  const pyRe = new RegExp(
+    `github\\.com/${org.replace(/-/g, "\\-")}/${sourceRepo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.git)?`
+  );
+  const gmRe = new RegExp(
+    `${org.replace(/-/g, "\\-")}/${sourceRepo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.git)?`
+  );
 
+  async function fileText(repo, path) {
+    const res = await fetch(`${GITHUB_API}/repos/${org}/${repo}/contents/${path}`, { headers });
+    if (res.status !== 200) return null;
+    const data = await res.json();
+    if (typeof data.content !== "string" || data.encoding !== "base64") return null;
+    return atob(data.content.replace(/\s/g, ""));
+  }
+
+  async function repoDepends(name) {
+    if (name === sourceRepo) return null;
+
+    const pkgRaw = await fileText(name, "package.json");
+    if (pkgRaw) {
+      try {
+        const j = JSON.parse(pkgRaw);
+        for (const section of ["dependencies", "devDependencies"]) {
+          const o = j[section];
+          if (!o) continue;
+          if (scopedKey in o || legacyKey in o) return name;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const pyRaw = await fileText(name, "pyproject.toml");
+    if (pyRaw && pyRe.test(pyRaw)) return name;
+
+    const gmRaw = await fileText(name, ".gitmodules");
+    if (gmRaw && gmRe.test(gmRaw)) return name;
+
+    return null;
+  }
+
+  const out = new Set();
+  const batchSize = 8;
+  for (let i = 0; i < repoNames.length; i += batchSize) {
+    const slice = repoNames.slice(i, i + batchSize);
+    const hits = await Promise.all(slice.map((n) => repoDepends(n)));
+    for (const h of hits) {
+      if (h) out.add(h);
+    }
+  }
+  return Array.from(out).sort();
+}
+
+async function triggerCascadeDispatch(installToken, repo, tag) {
   console.log("Calling GitHub API to trigger dispatch...");
   const response = await fetch(`${GITHUB_API}/repos/${ORG}/${TARGET_REPO}/dispatches`, {
     method: "POST",

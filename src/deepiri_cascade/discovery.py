@@ -130,7 +130,7 @@ class Discovery:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
                 f.write(package_json)
                 f.flush()
-                parsed = npm.parse_package_json(Path(f.name))
+                parsed = npm.parse_package_json(Path(f.name), self.org)
                 for name, version in parsed.items():
                     normalized = normalize_package_name(name)
                     if is_internal_dep(normalized):
@@ -191,10 +191,14 @@ class Discovery:
                 continue
 
             deps = self.parse_dependencies(repo_name)
+            org_scope_prefix = f"@{self.org}/"
             for dep_name, dep_repo in deps.items():
                 if dep_repo == source_repo:
                     continue
-                if dep_name.startswith("@deepiri/"):
+                if dep_name.startswith(org_scope_prefix):
+                    actual_repo = dep_name[len(org_scope_prefix) :]
+                    graph.setdefault(actual_repo, []).append(repo_name)
+                elif dep_name.startswith("@deepiri/"):
                     actual_repo = dep_name.replace("@deepiri/", "")
                     graph.setdefault(actual_repo, []).append(repo_name)
 

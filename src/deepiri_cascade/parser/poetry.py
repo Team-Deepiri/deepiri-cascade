@@ -20,7 +20,7 @@ def parse_pyproject_toml(path: Path) -> dict:
 
     for match in deepiri_pattern.finditer(content):
         name = match.group(1)
-        repo = match.group(2)
+        repo = match.group(2).removesuffix(".git")
         deps[name] = repo
 
     rev_pattern = re.compile(

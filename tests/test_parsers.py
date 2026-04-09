@@ -28,6 +28,24 @@ class TestNpmParser:
             assert "@deepiri/types" in deps
             assert "express" not in deps
 
+    def test_parse_package_json_team_deepiri_scope(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(
+                {
+                    "name": "consumer",
+                    "version": "1.0.0",
+                    "dependencies": {
+                        "@team-deepiri/deepiri-shared-utils": "^1.1.0",
+                        "lodash": "^4.0.0",
+                    },
+                },
+                f,
+            )
+            f.flush()
+            deps = npm.parse_package_json(Path(f.name), org="team-deepiri")
+            assert "@team-deepiri/deepiri-shared-utils" in deps
+            assert "lodash" not in deps
+
     def test_update_package_json(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump({

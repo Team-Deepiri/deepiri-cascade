@@ -9,6 +9,7 @@ Requires-Dist: httpx>=0.27.0
 Requires-Dist: rich>=13.0.0
 Requires-Dist: gitpython>=3.1.0
 Requires-Dist: tomli>=2.0.0
+Requires-Dist: deepiri-pkg-version-manager @ git+https://github.com/Team-Deepiri/deepiri-pkg-version-manager.git
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0.0; extra == "dev"
 Requires-Dist: pytest-asyncio>=0.21.0; extra == "dev"
@@ -18,68 +19,78 @@ Requires-Dist: mypy>=1.0.0; extra == "dev"
 
 # Deepiri Cascade
 
-Cascade version updates across Deepiri organization repositories.
+Automated dependency cascading across team-deepiri repositories.
 
 ## Features
 
-- **Auto-Detection**: Detects repo and tag from GitHub Actions event
-- **Multi-Format Support**: Handles npm (package.json), Poetry (pyproject.toml), and git submodules
-- **Wave-Based Updates**: Topological sort ensures correct update order
-- **Dry-Run Mode**: Preview changes without making updates
+- **Event-Driven**: Real-time updates when tags are pushed
+- **Multi-Format**: npm, Poetry, and git submodules
+- **Wave-Based**: Topological sort ensures correct update order
+- **Zero Config**: No workflow files needed in dependent repos
+- **Cloudflare-Hosted**: Free webhook handling
 
-## Installation
+## Quick Setup
+
+### 1. Create GitHub App
+
+1. Go to https://github.com/settings/apps/new
+2. Create app named `deepiri-cascade`
+3. Set permissions: Contents (Read), Metadata (Read), Pull Requests (Read/Write)
+4. Subscribe to events: Push, Repository dispatch
+5. Install on your organization
+6. Get **App ID** and generate **Private Key** (.pem)
+
+### 2. Deploy Cloudflare Worker
 
 ```bash
-pip install git+https://github.com/Team-Deepiri/deepiri-cascade.git
+cd worker
+wrangler login
+wrangler secret put GITHUB_APP_ID
+wrangler secret put GITHUB_APP_PRIVATE_KEY
+wrangler deploy
 ```
+
+### 3. Configure Webhook
+
+Set GitHub App webhook URL to your worker URL.
+
+### 4. Push a Tag
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The cascade runs automatically!
+
+## Full Setup Guide
+
+See [SETUP.md](SETUP.md) for detailed instructions.
 
 ## Usage
 
-### GitHub Actions (recommended)
-
-Add to any repo that should trigger cascade updates:
-
-```yaml
-# .github/workflows/cascade.yml
-name: Cascade Update
-
-on:
-  push:
-    tags:
-      - 'v*'
-
-jobs:
-  cascade:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: Team-Deepiri/deepiri-cascade@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-```
-
-### CLI (local testing)
+### Manual Trigger
 
 ```bash
-# With explicit repo and tag
 deepiri-cascade cascade --repo deepiri-shared-utils --tag v1.2.3
+```
 
-# Dry-run mode
+### Dry Run
+
+```bash
 deepiri-cascade cascade --repo deepiri-shared-utils --tag v1.2.3 --dry-run
 ```
 
-## Configuration
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--repo` | Repository name | auto-detected |
-| `--tag` | Version tag | auto-detected |
-| `--org` | GitHub organization | team-deepiri |
-| `--bump-type` | Version bump type | patch |
-| `--dry-run` | Preview only | false |
-| `--no-confirm` | Skip confirmation | false |
-
 ## Supported Package Managers
 
-- **npm**: Updates `dependencies` and `devDependencies` in package.json
-- **Poetry**: Updates git dependencies with `rev=` or `tag=` in pyproject.toml
-- **Git Submodules**: Updates submodule URLs in .gitmodules
+| Manager | File | Updates |
+|---------|------|---------|
+| npm | `package.json` | `@deepiri/*` dependencies |
+| Poetry | `pyproject.toml` | Git deps to team-deepiri |
+| Git | `.gitmodules` | team-deepiri submodules |
+
+## Architecture
+
+```
+Tag push → GitHub App webhook → Cloudflare Worker → GitHub API → cascade.yml
+```

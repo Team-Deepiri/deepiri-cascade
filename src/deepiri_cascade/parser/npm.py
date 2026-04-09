@@ -5,8 +5,11 @@ from pathlib import Path
 from typing import Optional
 
 
-def parse_package_json(path: Path) -> dict:
-    """Parse package.json and extract Deepiri dependencies."""
+def parse_package_json(path: Path, org: str = "team-deepiri") -> dict:
+    """Parse package.json and extract internal scoped dependencies.
+
+    Includes ``@{org}/...`` (matches cascade updates) and legacy ``@deepiri/...``.
+    """
     try:
         with open(path) as f:
             data = json.load(f)
@@ -14,11 +17,12 @@ def parse_package_json(path: Path) -> dict:
         return {}
 
     deps = {}
+    org_scope = f"@{org}/"
 
     for key in ["dependencies", "devDependencies"]:
         if key in data:
             for name, version in data[key].items():
-                if name.startswith("@deepiri/"):
+                if name.startswith(org_scope) or name.startswith("@deepiri/"):
                     deps[name] = normalize_version(version)
 
     return deps
