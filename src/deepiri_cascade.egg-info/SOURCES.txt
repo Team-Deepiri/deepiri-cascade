@@ -3,6 +3,7 @@ pyproject.toml
 src/deepiri_cascade/__init__.py
 src/deepiri_cascade/auto_detect.py
 src/deepiri_cascade/cascade.py
+src/deepiri_cascade/ci_logging.py
 src/deepiri_cascade/cli.py
 src/deepiri_cascade/discovery.py
 src/deepiri_cascade/github_auth.py
@@ -16,4 +17,5 @@ src/deepiri_cascade/parser/__init__.py
 src/deepiri_cascade/parser/gitmodules.py
 src/deepiri_cascade/parser/npm.py
 src/deepiri_cascade/parser/poetry.py
+tests/test_ci_logging.py
 tests/test_parsers.py

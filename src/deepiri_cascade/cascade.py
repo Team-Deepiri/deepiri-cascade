@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import httpx
 from rich.console import Console
@@ -12,8 +12,8 @@ from rich.table import Table
 
 from deepiri_pkg_version_manager.scanners.repo_scanner import check_git_submodules
 
+from .ci_logging import compute_dependency_waves
 from .parser import npm, poetry, gitmodules
-from .discovery import Discovery
 from .github_auth import get_token_source
 
 console = Console()
@@ -71,7 +71,7 @@ class CascadeProcessor:
             console.print(f"[yellow]No dependent repos found for {source_repo}[/yellow]")
             return {"updated": [], "skipped": [], "failed": []}
 
-        waves = self._compute_waves(dependency_graph, source_repo)
+        waves = compute_dependency_waves(dependency_graph, source_repo)
 
         console.print(f"\n[cyan]Found {len(dependents)} dependent repos in {len(waves)} wave(s)[/cyan]\n")
 
@@ -102,31 +102,6 @@ class CascadeProcessor:
                     results["failed"].append(repo)
 
         return results
-
-    def _compute_waves(self, graph: Dict[str, List[str]], source: str) -> List[List[str]]:
-        """Compute topological waves for dependent repos."""
-        dependents = graph.get(source, [])
-        
-        if not dependents:
-            return []
-
-        waves = []
-        processed = set()
-        current_wave = dependents.copy()
-
-        while current_wave:
-            waves.append(current_wave)
-            processed.update(current_wave)
-
-            next_wave = []
-            for repo in current_wave:
-                for dep in graph.get(repo, []):
-                    if dep not in processed and dep not in next_wave:
-                        next_wave.append(dep)
-
-            current_wave = next_wave
-
-        return waves
 
     def _update_repo(
         self,

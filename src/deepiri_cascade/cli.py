@@ -1,5 +1,8 @@
 import click
+
 from rich.console import Console
+
+from .ci_logging import compute_dependency_waves, emit_cascade_plan_for_ci
 
 console = Console()
 
@@ -45,6 +48,9 @@ def cascade(ctx, repo, tag, org, token, bump_type, dry_run, no_confirm, work_dir
 
     discovery = Discovery(token, org, verbose=verbose)
     graph = discovery.build_dependency_graph(repo, tag)
+
+    waves = compute_dependency_waves(graph, repo)
+    emit_cascade_plan_for_ci(org, repo, tag, graph, waves)
 
     processor = CascadeProcessor(
         token=token,
