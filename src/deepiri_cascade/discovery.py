@@ -12,6 +12,8 @@ from deepiri_pkg_version_manager.scanners.repo_scanner import (
 )
 
 from .parser import npm, poetry, gitmodules
+from .parser.npm import parse_package_lock_json
+from .parser.poetry import parse_poetry_lock
 
 
 class Discovery:
@@ -142,9 +144,26 @@ class Discovery:
                 f.write(pyproject_toml)
                 f.flush()
                 parsed = poetry.parse_pyproject_toml(Path(f.name))
+                # is_internal_dep is npm-centric; pyproject.toml git URLs are
+                # already filtered to team-deepiri by the parser regex.
                 for name, dep_repo in parsed.items():
-                    if is_internal_dep(name):
-                        deps[name] = dep_repo
+                    deps[name] = dep_repo
+
+        poetry_lock = self.fetch_file_content(repo_name, "poetry.lock")
+        if poetry_lock:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".lock", delete=False) as f:
+                f.write(poetry_lock)
+                f.flush()
+                for name, dep_repo in parse_poetry_lock(Path(f.name)).items():
+                    deps.setdefault(name, dep_repo)
+
+        package_lock = self.fetch_file_content(repo_name, "package-lock.json")
+        if package_lock:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                f.write(package_lock)
+                f.flush()
+                for name, resolved in parse_package_lock_json(Path(f.name), self.org).items():
+                    deps.setdefault(name, resolved)
 
         gitmodules_content = self.fetch_file_content(repo_name, ".gitmodules")
         if gitmodules_content:

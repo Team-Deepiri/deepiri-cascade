@@ -13,9 +13,11 @@ def parse_pyproject_toml(path: Path) -> dict:
 
     deps = {}
 
+    # Poetry git dependencies use `git =`, not `url =`.
+    # re.DOTALL so [^}]* crosses newlines for multi-line TOML blocks.
     deepiri_pattern = re.compile(
-        r'([a-z][a-z0-9_-]*)\s*=\s*\{[^}]*url\s*=\s*["\']https?://github\.com/team-deepiri/([^"\']+)["\'][^}]*\}',
-        re.IGNORECASE
+        r'([a-z][a-z0-9_-]*)\s*=\s*\{[^}]*git\s*=\s*["\']https?://github\.com/team-deepiri/([^"\']+)["\'][^}]*\}',
+        re.IGNORECASE | re.DOTALL
     )
 
     for match in deepiri_pattern.finditer(content):
@@ -25,23 +27,27 @@ def parse_pyproject_toml(path: Path) -> dict:
 
     rev_pattern = re.compile(
         r'([a-z][a-z0-9_-]*)\s*=\s*\{[^}]*rev\s*=\s*["\']v?([0-9.]+)["\'][^}]*\}',
-        re.IGNORECASE
+        re.IGNORECASE | re.DOTALL
     )
 
     for match in rev_pattern.finditer(content):
         name = match.group(1)
         version = match.group(2)
-        deps[name] = f"v{version}"
+        # Don't overwrite a repo-name value already set by deepiri_pattern.
+        if name not in deps:
+            deps[name] = f"v{version}"
 
     tag_pattern = re.compile(
         r'([a-z][a-z0-9_-]*)\s*=\s*\{[^}]*tag\s*=\s*["\']v?([0-9.]+)["\'][^}]*\}',
-        re.IGNORECASE
+        re.IGNORECASE | re.DOTALL
     )
 
     for match in tag_pattern.finditer(content):
         name = match.group(1)
         version = match.group(2)
-        deps[name] = f"v{version}"
+        # Don't overwrite a repo-name value already set by deepiri_pattern.
+        if name not in deps:
+            deps[name] = f"v{version}"
 
     return deps
 
@@ -89,6 +95,40 @@ def get_pyproject_version(path: Path) -> Optional[str]:
         return version_match.group(1)
 
     return None
+
+
+def parse_poetry_lock(path: Path) -> dict:
+    """Parse poetry.lock and extract Deepiri git-sourced dependencies.
+
+    Returns a dict of {python_package_name: github_repo_name}.
+    """
+    try:
+        content = path.read_text()
+    except FileNotFoundError:
+        return {}
+
+    deps = {}
+
+    package_block_pattern = re.compile(
+        r'\[\[package\]\](.*?)(?=\[\[package\]\]|\Z)',
+        re.DOTALL
+    )
+    name_pattern = re.compile(r'^name\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
+    source_url_pattern = re.compile(
+        r'\[package\.source\].*?url\s*=\s*["\']https?://github\.com/team-deepiri/([^"\']+)["\']',
+        re.DOTALL
+    )
+
+    for block_match in package_block_pattern.finditer(content):
+        block = block_match.group(1)
+        name_match = name_pattern.search(block)
+        url_match = source_url_pattern.search(block)
+        if name_match and url_match:
+            name = name_match.group(1)
+            repo = url_match.group(1).removesuffix(".git")
+            deps[name] = repo
+
+    return deps
 
 
 def bump_pyproject_version(path: Path, bump_type: str) -> Optional[str]:

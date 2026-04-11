@@ -43,8 +43,8 @@ jobs:
             REPO="${{ github.event.client_payload.repo }}"
             TAG="${{ github.event.client_payload.tag }}"
           else
-            REPO="${{ github.inputs.repo }}"
-            TAG="${{ github.inputs.tag }}"
+            REPO="${{ github.events.inputs.repo }}"
+            TAG="${{ github.events.inputs.tag }}"
           fi
           echo "repo=$REPO" >> $GITHUB_OUTPUT
           echo "tag=$TAG" >> $GITHUB_OUTPUT
