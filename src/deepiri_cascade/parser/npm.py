@@ -28,6 +28,41 @@ def parse_package_json(path: Path, org: str = "team-deepiri") -> dict:
     return deps
 
 
+def parse_package_lock_json(path: Path, org: str = "team-deepiri") -> dict:
+    """Parse package-lock.json and extract internal git-sourced dependencies.
+
+    Handles lockfileVersion 1 (dependencies) and 2/3 (packages).
+    Returns a dict of {scoped_package_name: resolved_ref}.
+    """
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError):
+        return {}
+
+    deps = {}
+    org_scope = f"@{org}/"
+
+    # lockfileVersion 2 and 3
+    for pkg_path, pkg_info in data.get("packages", {}).items():
+        for prefix in (f"node_modules/{org_scope}", "node_modules/@deepiri/"):
+            if pkg_path.startswith(prefix):
+                pkg_name = pkg_path[len("node_modules/"):]
+                resolved = pkg_info.get("resolved", "")
+                if resolved.startswith("git+") or resolved.startswith("github:") or "#" in resolved:
+                    deps[pkg_name] = resolved
+                break
+
+    # lockfileVersion 1
+    for name, info in data.get("dependencies", {}).items():
+        if name.startswith(org_scope) or name.startswith("@deepiri/"):
+            version = info.get("version", "")
+            if version.startswith("github:") or version.startswith("git+") or "#" in version:
+                deps[name] = version
+
+    return deps
+
+
 def normalize_version(version: str) -> str:
     """Normalize version string for comparison."""
     if version.startswith("file:"):

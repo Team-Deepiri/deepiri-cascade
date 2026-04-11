@@ -28,7 +28,7 @@ def parse_gitmodules(path: Path) -> dict:
             url = url_match.group(1).strip()
             if "team-deepiri/" in url:
                 parts = url.rsplit("team-deepiri/", 1)
-                repo = parts[-1].rstrip(".git")
+                repo = parts[-1].removesuffix(".git")
                 deps[name] = repo
 
     return deps
