@@ -1,4 +1,5 @@
 """Wave-based cascade processor."""
+import json
 import os
 import shutil
 import subprocess
@@ -126,8 +127,9 @@ class CascadeProcessor:
 
             pkg_json = clone_path / "package.json"
             if pkg_json.exists():
-                if npm.update_package_json(pkg_json, f"@{self.org}/{source_repo}", source_tag):
-                    console.print(f"    [green]Updated package.json[/green]")
+                pkg_name = self._find_npm_dep_name(pkg_json, source_repo)
+                if pkg_name and npm.update_package_json(pkg_json, pkg_name, source_tag):
+                    console.print(f"    [green]Updated package.json ({pkg_name})[/green]")
                     npm.bump_package_version(pkg_json, self.bump_type)
                     self._regenerate_npm_lock(clone_path)
                     updated = True
@@ -166,6 +168,33 @@ class CascadeProcessor:
         except Exception as e:
             console.print(f"    [red]Error: {e}[/red]")
             return False
+
+    def _find_npm_dep_name(self, pkg_json: Path, source_repo: str) -> Optional[str]:
+        """Find the npm package name in package.json that maps to source_repo.
+
+        Handles the mismatch between repo names (deepiri-shared-utils) and
+        npm scoped names (@team-deepiri/shared-utils).
+        """
+        try:
+            with open(pkg_json) as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            return None
+
+        for prefix in (f"@{self.org}/", "@deepiri/"):
+            for key in ("dependencies", "devDependencies"):
+                if key not in data:
+                    continue
+                for name in data[key]:
+                    if not name.startswith(prefix):
+                        continue
+                    base = name[len(prefix):]
+                    if (base == source_repo
+                            or f"deepiri-{base}" == source_repo
+                            or base == source_repo.removeprefix("deepiri-")):
+                        return name
+
+        return None
 
     def _get_or_clone_repo(self, repo_name: str) -> Optional[Path]:
         """Get cached repo or clone it with submodules."""
