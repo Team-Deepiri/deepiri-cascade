@@ -64,6 +64,24 @@ class TestNpmParser:
                 data = json.load(rf)
             assert data["dependencies"]["@deepiri/shared-utils"] == "^2.0.0"
 
+    def test_update_package_json_strips_v_prefix(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({
+                "name": "test",
+                "version": "1.0.0",
+                "dependencies": {
+                    "@team-deepiri/shared-utils": "^1.0.0"
+                }
+            }, f)
+            f.flush()
+
+            result = npm.update_package_json(Path(f.name), "@team-deepiri/shared-utils", "v2.0.0")
+            assert result is True
+
+            with open(f.name) as rf:
+                data = json.load(rf)
+            assert data["dependencies"]["@team-deepiri/shared-utils"] == "^2.0.0"
+
     def test_bump_package_version(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump({"name": "test", "version": "1.2.3"}, f)

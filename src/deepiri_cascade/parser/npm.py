@@ -87,7 +87,8 @@ def update_package_json(path: Path, package_name: str, new_version: str) -> bool
     for key in ["dependencies", "devDependencies"]:
         if key in data and package_name in data[key]:
             old_version = data[key][package_name]
-            new_spec = f"^{new_version}" if not new_version.startswith("file:") else new_version
+            clean = new_version.lstrip("v") if not new_version.startswith("file:") else new_version
+            new_spec = f"^{clean}" if not new_version.startswith("file:") else clean
             data[key][package_name] = new_spec
             modified = True
 

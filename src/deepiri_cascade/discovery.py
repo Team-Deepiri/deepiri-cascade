@@ -1,15 +1,8 @@
 """Dependency graph discovery via GitHub API."""
 import httpx
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Set, Optional
+from typing import Dict, List, Optional
 import tempfile
-import shutil
-
-from deepiri_pkg_version_manager.scanners.repo_scanner import (
-    is_internal_dep,
-    normalize_package_name,
-)
 
 from .parser import npm, poetry, gitmodules
 from .parser.npm import parse_package_lock_json
@@ -134,9 +127,7 @@ class Discovery:
                 f.flush()
                 parsed = npm.parse_package_json(Path(f.name), self.org)
                 for name, version in parsed.items():
-                    normalized = normalize_package_name(name)
-                    if is_internal_dep(normalized):
-                        deps[name] = version
+                    deps[name] = version
 
         pyproject_toml = self.fetch_file_content(repo_name, "pyproject.toml")
         if pyproject_toml:
@@ -177,6 +168,27 @@ class Discovery:
         self._deps_cache[repo_name] = deps
         return deps
 
+    def _resolve_dep_to_repo(self, dep_name: str, dep_value: str, repo_name_set: set) -> Optional[str]:
+        """Resolve a dependency entry to a GitHub repo name.
+
+        Handles the mismatch between npm package names
+        (e.g. @team-deepiri/shared-utils) and GitHub repo names
+        (e.g. deepiri-shared-utils).
+        """
+        if dep_value in repo_name_set:
+            return dep_value
+
+        for prefix in (f"@{self.org}/", "@deepiri/"):
+            if dep_name.startswith(prefix):
+                base_name = dep_name[len(prefix):]
+                if base_name in repo_name_set:
+                    return base_name
+                prefixed = f"deepiri-{base_name}"
+                if prefixed in repo_name_set:
+                    return prefixed
+
+        return None
+
     def build_dependency_graph(self, source_repo: str, source_tag: str) -> Dict[str, List[str]]:
         """
         Build a dependency graph for all repos in the org.
@@ -189,6 +201,7 @@ class Discovery:
 
         all_repos = self.list_org_repos()
         repo_names = [r["name"] for r in all_repos]
+        repo_name_set = set(repo_names)
 
         if self.verbose:
             print(f"Found {len(repo_names)} repos")
@@ -201,25 +214,24 @@ class Discovery:
 
             deps = self.parse_dependencies(repo_name)
 
-            if source_repo in deps.values() or f"@{self.org}/{source_repo}" in deps:
-                graph.setdefault(source_repo, []).append(repo_name)
-                graph[repo_name] = []
+            for dep_name, dep_value in deps.items():
+                resolved = self._resolve_dep_to_repo(dep_name, dep_value, repo_name_set)
+                if resolved == source_repo:
+                    if repo_name not in graph.get(source_repo, []):
+                        graph.setdefault(source_repo, []).append(repo_name)
+                    graph.setdefault(repo_name, [])
+                    break
 
         for repo_name in repo_names:
             if repo_name == source_repo:
                 continue
 
             deps = self.parse_dependencies(repo_name)
-            org_scope_prefix = f"@{self.org}/"
-            for dep_name, dep_repo in deps.items():
-                if dep_repo == source_repo:
-                    continue
-                if dep_name.startswith(org_scope_prefix):
-                    actual_repo = dep_name[len(org_scope_prefix) :]
-                    graph.setdefault(actual_repo, []).append(repo_name)
-                elif dep_name.startswith("@deepiri/"):
-                    actual_repo = dep_name.replace("@deepiri/", "")
-                    graph.setdefault(actual_repo, []).append(repo_name)
+            for dep_name, dep_value in deps.items():
+                resolved = self._resolve_dep_to_repo(dep_name, dep_value, repo_name_set)
+                if resolved and resolved != source_repo and resolved in graph:
+                    if repo_name not in graph.get(resolved, []):
+                        graph.setdefault(resolved, []).append(repo_name)
 
         return graph
 
