@@ -1,6 +1,7 @@
 """Wave-based cascade processor."""
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -205,7 +206,7 @@ class CascadeProcessor:
 
         clone_path = self.work_dir / repo_name
 
-        url = f"https://github.com/{self.org}/{repo_name}.git"
+        url = f"https://x-access-token:{self.token}@github.com/{self.org}/{repo_name}.git"
         try:
             result = subprocess.run(
                 ["git", "clone", "--recurse-submodules", "--depth", "1", url, str(clone_path)],
@@ -370,8 +371,34 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
             pass
         return None
 
+    def _inject_npm_auth(self, clone_path: Path):
+        """Inject GitHub Packages auth token into .npmrc if needed."""
+        npmrc = clone_path / ".npmrc"
+        auth_line = f"//npm.pkg.github.com/:_authToken={self.token}"
+
+        if npmrc.exists():
+            content = npmrc.read_text()
+            lines = content.splitlines()
+            has_github_packages_host = False
+            has_auth_token = False
+
+            for raw_line in lines:
+                line = raw_line.strip()
+                if not line or line.startswith(("#", ";")):
+                    continue
+                if re.match(r"^//npm\.pkg\.github\.com(?::\d+)?/", line):
+                    has_github_packages_host = True
+                if "_authToken" in line:
+                    has_auth_token = True
+
+            if has_github_packages_host and not has_auth_token:
+                npmrc.write_text(content.rstrip("\n") + f"\n{auth_line}\n")
+        else:
+            npmrc.write_text(f"{auth_line}\n")
+
     def _regenerate_npm_lock(self, clone_path: Path):
         """Regenerate package-lock.json."""
+        self._inject_npm_auth(clone_path)
         try:
             result = subprocess.run(
                 ["npm", "install"],

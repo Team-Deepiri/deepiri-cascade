@@ -16,6 +16,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: team-deepiri
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -28,7 +36,7 @@ jobs:
 
       - name: Run cascade
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           deepiri-cascade cascade \
             --repo "${{ inputs.repo }}" \
