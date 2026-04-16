@@ -205,7 +205,7 @@ class CascadeProcessor:
 
         clone_path = self.work_dir / repo_name
 
-        url = f"https://github.com/{self.org}/{repo_name}.git"
+        url = f"https://x-access-token:{self.token}@github.com/{self.org}/{repo_name}.git"
         try:
             result = subprocess.run(
                 ["git", "clone", "--recurse-submodules", "--depth", "1", url, str(clone_path)],
@@ -370,8 +370,21 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
             pass
         return None
 
+    def _inject_npm_auth(self, clone_path: Path):
+        """Inject GitHub Packages auth token into .npmrc if needed."""
+        npmrc = clone_path / ".npmrc"
+        auth_line = f"//npm.pkg.github.com/:_authToken={self.token}"
+
+        if npmrc.exists():
+            content = npmrc.read_text()
+            if "npm.pkg.github.com" in content and "_authToken" not in content:
+                npmrc.write_text(content.rstrip("\n") + f"\n{auth_line}\n")
+        else:
+            npmrc.write_text(f"{auth_line}\n")
+
     def _regenerate_npm_lock(self, clone_path: Path):
         """Regenerate package-lock.json."""
+        self._inject_npm_auth(clone_path)
         try:
             result = subprocess.run(
                 ["npm", "install"],
