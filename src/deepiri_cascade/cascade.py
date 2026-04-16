@@ -1,6 +1,7 @@
 """Wave-based cascade processor."""
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -377,7 +378,20 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
 
         if npmrc.exists():
             content = npmrc.read_text()
-            if "npm.pkg.github.com" in content and "_authToken" not in content:
+            lines = content.splitlines()
+            has_github_packages_host = False
+            has_auth_token = False
+
+            for raw_line in lines:
+                line = raw_line.strip()
+                if not line or line.startswith(("#", ";")):
+                    continue
+                if re.match(r"^//npm\.pkg\.github\.com(?::\d+)?/", line):
+                    has_github_packages_host = True
+                if "_authToken" in line:
+                    has_auth_token = True
+
+            if has_github_packages_host and not has_auth_token:
                 npmrc.write_text(content.rstrip("\n") + f"\n{auth_line}\n")
         else:
             npmrc.write_text(f"{auth_line}\n")
