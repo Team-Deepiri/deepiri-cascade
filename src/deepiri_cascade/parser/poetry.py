@@ -70,9 +70,12 @@ def update_pyproject_toml(path: Path, package_name: str, new_version: str, versi
 
     modified = False
     new_content = content
-
     for pattern, replacement in patterns:
-        if pattern.search(new_content):
+        match = pattern.search(new_content)
+        if match:
+            current_version = match.group(0).split(match.group(1), 1)[1].rsplit(match.group(2), 1)[0]
+            if current_version.lstrip("v") == new_version_clean:
+                continue
             new_content = pattern.sub(replacement, new_content)
             modified = True
             break

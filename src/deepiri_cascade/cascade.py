@@ -1,10 +1,7 @@
 """Wave-based cascade processor."""
 import json
-import os
 import re
-import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -12,11 +9,8 @@ import httpx
 from rich.console import Console
 from rich.table import Table
 
-from deepiri_pkg_version_manager.scanners.repo_scanner import check_git_submodules
-
 from .ci_logging import compute_dependency_waves
 from .parser import npm, poetry, gitmodules
-from .github_auth import get_token_source
 
 console = Console()
 
@@ -97,9 +91,11 @@ class CascadeProcessor:
             console.print(f"\n[cyan]Processing Wave {wave_idx}...[/cyan]")
 
             for repo in wave:
-                success = self._update_repo(repo, source_repo, source_tag)
-                if success:
+                status = self._update_repo(repo, source_repo, source_tag)
+                if status == "updated":
                     results["updated"].append(repo)
+                elif status == "skipped":
+                    results["skipped"].append(repo)
                 else:
                     results["failed"].append(repo)
 
@@ -110,19 +106,19 @@ class CascadeProcessor:
         repo_name: str,
         source_repo: str,
         source_tag: str,
-    ) -> bool:
+    ) -> str:
         """Update a single dependent repo."""
         console.print(f"  Updating {repo_name}...")
 
         if self.dry_run:
             console.print(f"    [dim](dry-run) Would update {source_repo} -> {source_tag}[/dim]")
-            return True
+            return "updated"
 
         try:
             clone_path = self._get_or_clone_repo(repo_name)
             if not clone_path:
                 console.print(f"    [red]Failed to clone repo[/red]")
-                return False
+                return "failed"
 
             updated = False
 
@@ -160,15 +156,17 @@ class CascadeProcessor:
                 pr_url = self._create_pull_request(repo_name, clone_path, source_repo, source_tag)
                 if pr_url:
                     console.print(f"    [green]Created PR: {pr_url}[/green]")
+                    return "updated"
                 else:
                     console.print(f"    [red]Failed to create PR[/red]")
-                    return False
+                    return "failed"
 
-            return True
+            console.print(f"    [yellow]No matching dependency file update was made[/yellow]")
+            return "skipped"
 
         except Exception as e:
             console.print(f"    [red]Error: {e}[/red]")
-            return False
+            return "failed"
 
     def _find_npm_dep_name(self, pkg_json: Path, source_repo: str) -> Optional[str]:
         """Find the npm package name in package.json that maps to source_repo.
@@ -201,10 +199,15 @@ class CascadeProcessor:
         """Get cached repo or clone it with submodules."""
         if repo_name in self._repo_cache:
             path = self._repo_cache[repo_name]
-            self._git_fetch(path)
+            self._git_fetch(path, repo_name)
             return path
 
         clone_path = self.work_dir / repo_name
+        if clone_path.exists():
+            self._repo_cache[repo_name] = clone_path
+            if self._git_fetch(clone_path, repo_name):
+                return clone_path
+            return None
 
         url = f"https://x-access-token:{self.token}@github.com/{self.org}/{repo_name}.git"
         try:
@@ -223,27 +226,28 @@ class CascadeProcessor:
         except Exception:
             return None
 
-    def _git_fetch(self, path: Path):
-        """Fetch latest changes for cached repo."""
-        try:
-            subprocess.run(["git", "fetch", "--all"], cwd=path, capture_output=True, timeout=30)
-            subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=path, capture_output=True, timeout=30)
-        except Exception:
-            pass
-
     def _commit_and_push(self, repo_name: str, clone_path: Path):
         """Commit and push changes to a new branch."""
         try:
             branch_name = f"deepiri-cascade/{repo_name}/deps/{self._source_sha[:8]}" if self._source_sha else f"deepiri-cascade/{repo_name}/deps/{self._source_tag}"
             
-            subprocess.run(
-                ["git", "checkout", "-b", branch_name],
+            checkout = subprocess.run(
+                ["git", "checkout", "-B", branch_name],
                 cwd=clone_path,
                 capture_output=True,
+                text=True,
                 timeout=30,
             )
+            if checkout.returncode != 0:
+                console.print(f"    [red]git checkout failed: {checkout.stderr[:200]}[/red]")
+                return None
 
-            subprocess.run(["git", "add", "-A"], cwd=clone_path, capture_output=True)
+            self._ensure_git_identity(clone_path)
+
+            add = subprocess.run(["git", "add", "-A"], cwd=clone_path, capture_output=True, text=True)
+            if add.returncode != 0:
+                console.print(f"    [red]git add failed: {add.stderr[:200]}[/red]")
+                return None
             result = subprocess.run(
                 ["git", "diff", "--cached", "--stat"],
                 cwd=clone_path,
@@ -254,18 +258,26 @@ class CascadeProcessor:
                 return None
 
             commit_msg = f"deps: update {self._source_repo} → {self._source_tag}"
-            subprocess.run(
+            commit = subprocess.run(
                 ["git", "commit", "-m", commit_msg],
                 cwd=clone_path,
                 capture_output=True,
+                text=True,
             )
+            if commit.returncode != 0:
+                console.print(f"    [red]git commit failed: {commit.stderr[:200]}[/red]")
+                return None
 
-            subprocess.run(
+            push = subprocess.run(
                 ["git", "push", "origin", branch_name, "-f"],
                 cwd=clone_path,
                 capture_output=True,
+                text=True,
                 timeout=60,
             )
+            if push.returncode != 0:
+                console.print(f"    [red]git push failed: {push.stderr[:200]}[/red]")
+                return None
 
             return branch_name
 
@@ -313,10 +325,11 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
             
             if response.status_code == 201:
                 pr_data = response.json()
-                pr_number = pr_data.get("number")
                 pr_url = pr_data.get("html_url")
+                pr_node_id = pr_data.get("node_id")
                 
-                self._enable_auto_merge(repo_name, pr_number)
+                if pr_node_id:
+                    self._enable_auto_merge(pr_node_id)
                 
                 return pr_url
             else:
@@ -327,17 +340,23 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
             console.print(f"    [red]PR creation error: {e}[/red]")
             return None
 
-    def _enable_auto_merge(self, repo_name: str, pr_number: int) -> bool:
+    def _enable_auto_merge(self, pull_request_id: str) -> bool:
         """Enable auto-merge on a pull request."""
-        url = f"https://api.github.com/repos/{self.org}/{repo_name}/pulls/{pr_number}/merge"
+        url = "https://api.github.com/graphql"
         payload = {
-            "auto_merge_method": "MERGE",
-            "auto_merge_enabled": True,
+            "query": """
+            mutation EnableAutoMerge($pullRequestId: ID!) {
+              enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId, mergeMethod: MERGE}) {
+                pullRequest { number }
+              }
+            }
+            """,
+            "variables": {"pullRequestId": pull_request_id},
         }
 
         try:
-            response = httpx.put(url, json=payload, headers=self.headers, timeout=30)
-            if response.status_code in (200, 201):
+            response = httpx.post(url, json=payload, headers=self.headers, timeout=30)
+            if response.status_code == 200 and not response.json().get("errors"):
                 console.print(f"    [green]Auto-merge enabled[/green]")
                 return True
             else:
@@ -365,43 +384,59 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
             response = httpx.get(url, headers=self.headers, timeout=10)
             if response.status_code == 200:
                 data = response.json()
-                if "object" in data and "sha" in data["object"]:
-                    return data["object"]["sha"]
+                obj = data.get("object", {})
+                sha = obj.get("sha")
+                if obj.get("type") == "tag" and sha:
+                    tag_response = httpx.get(
+                        f"https://api.github.com/repos/{self.org}/{repo_name}/git/tags/{sha}",
+                        headers=self.headers,
+                        timeout=10,
+                    )
+                    if tag_response.status_code == 200:
+                        tag_data = tag_response.json()
+                        return tag_data.get("object", {}).get("sha")
+                if sha:
+                    return sha
         except Exception:
             pass
         return None
 
     def _inject_npm_auth(self, clone_path: Path):
-        """Inject GitHub Packages auth token into .npmrc if needed."""
+        """Inject internal scope registry config and auth token into .npmrc."""
         npmrc = clone_path / ".npmrc"
-        auth_line = f"//npm.pkg.github.com/:_authToken={self.token}"
+        managed_lines = [
+            "@deepiri:registry=https://npm.pkg.github.com",
+            f"@{self.org}:registry=https://npm.pkg.github.com",
+            "//npm.pkg.github.com/:_authToken="
+            f"{self.token}",
+        ]
 
-        if npmrc.exists():
-            content = npmrc.read_text()
-            lines = content.splitlines()
-            has_github_packages_host = False
-            has_auth_token = False
-
-            for raw_line in lines:
-                line = raw_line.strip()
-                if not line or line.startswith(("#", ";")):
-                    continue
-                if re.match(r"^//npm\.pkg\.github\.com(?::\d+)?/", line):
-                    has_github_packages_host = True
-                if "_authToken" in line:
-                    has_auth_token = True
-
-            if has_github_packages_host and not has_auth_token:
-                npmrc.write_text(content.rstrip("\n") + f"\n{auth_line}\n")
-        else:
-            npmrc.write_text(f"{auth_line}\n")
+        content = npmrc.read_text() if npmrc.exists() else ""
+        existing_lines = [line for line in content.splitlines() if line.strip()]
+        github_packages_auth = re.compile(r"^//npm\.pkg\.github\.com(?::\d+)?/:_authToken=")
+        filtered_lines = [
+            line for line in existing_lines
+            if not (
+                line.startswith("@deepiri:registry=")
+                or line.startswith(f"@{self.org}:registry=")
+                or github_packages_auth.match(line)
+            )
+        ]
+        new_content = "\n".join(filtered_lines + managed_lines) + "\n"
+        npmrc.write_text(new_content)
 
     def _regenerate_npm_lock(self, clone_path: Path):
         """Regenerate package-lock.json."""
         self._inject_npm_auth(clone_path)
         try:
             result = subprocess.run(
-                ["npm", "install"],
+                [
+                    "npm",
+                    "install",
+                    "--package-lock-only",
+                    "--workspaces=false",
+                    "--ignore-scripts",
+                ],
                 cwd=clone_path,
                 capture_output=True,
                 text=True,
@@ -431,10 +466,47 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
         except Exception as e:
             console.print(f"    [yellow]poetry lock error: {e}[/yellow]")
 
-    def _git_fetch(self, path: Path):
+    def _ensure_git_identity(self, path: Path):
+        """Set a local git identity when Actions did not provide one."""
+        subprocess.run(
+            ["git", "config", "user.name", "deepiri-cascade"],
+            cwd=path,
+            capture_output=True,
+            timeout=10,
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "deepiri-cascade@users.noreply.github.com"],
+            cwd=path,
+            capture_output=True,
+            timeout=10,
+        )
+
+    def _git_fetch(self, path: Path, repo_name: str) -> bool:
         """Fetch latest changes for cached repo."""
         try:
-            subprocess.run(["git", "fetch", "--all"], cwd=path, capture_output=True, timeout=30)
-            subprocess.run(["git", "fetch", "--recurse-submodules", "--all"], cwd=path, capture_output=True, timeout=30)
+            default_branch = self._get_default_branch(repo_name)
+            fetch = subprocess.run(
+                ["git", "fetch", "--all", "--prune"],
+                cwd=path,
+                capture_output=True,
+                timeout=30,
+            )
+            if fetch.returncode != 0:
+                return False
+            reset = subprocess.run(
+                ["git", "reset", "--hard", f"origin/{default_branch}"],
+                cwd=path,
+                capture_output=True,
+                timeout=30,
+            )
+            if reset.returncode != 0:
+                return False
+            submodules = subprocess.run(
+                ["git", "submodule", "update", "--init", "--recursive"],
+                cwd=path,
+                capture_output=True,
+                timeout=120,
+            )
+            return submodules.returncode == 0
         except Exception:
-            pass
+            return False

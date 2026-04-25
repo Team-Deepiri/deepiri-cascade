@@ -82,6 +82,20 @@ class TestNpmParser:
                 data = json.load(rf)
             assert data["dependencies"]["@team-deepiri/shared-utils"] == "^2.0.0"
 
+    def test_update_package_json_returns_false_when_version_is_already_target(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({
+                "name": "test",
+                "version": "1.0.0",
+                "dependencies": {
+                    "@deepiri/shared-utils": "^1.0.0"
+                }
+            }, f)
+            f.flush()
+
+            result = npm.update_package_json(Path(f.name), "@deepiri/shared-utils", "v1.0.0")
+            assert result is False
+
     def test_bump_package_version(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump({"name": "test", "version": "1.2.3"}, f)
@@ -124,6 +138,18 @@ deepiri-shared-utils = {git = "https://github.com/team-deepiri/deepiri-shared-ut
             
             content = Path(f.name).read_text()
             assert "2.0.0" in content
+
+    def test_update_pyproject_toml_returns_false_when_version_is_already_target(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+            f.write("""
+[tool.poetry.dependencies]
+python = "^3.11"
+deepiri-shared-utils = {git = "https://github.com/team-deepiri/deepiri-shared-utils.git", rev = "v1.2.3"}
+""")
+            f.flush()
+
+            result = poetry.update_pyproject_toml(Path(f.name), "deepiri-shared-utils", "v1.2.3")
+            assert result is False
 
 
 class TestGitmodulesParser:

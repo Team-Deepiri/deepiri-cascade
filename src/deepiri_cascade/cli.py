@@ -64,8 +64,11 @@ def cascade(ctx, repo, tag, org, token, bump_type, dry_run, no_confirm, work_dir
     results = processor.run(graph, source_repo=repo, source_tag=tag, confirm=not no_confirm)
 
     console.print(f"\n[green]✓ Updated {len(results.get('updated', []))} repos[/green]")
+    if results.get("skipped"):
+        console.print(f"[yellow]- Skipped: {len(results['skipped'])}[/yellow]")
     if results.get("failed"):
         console.print(f"[red]✗ Failed: {len(results['failed'])}[/red]")
+        raise click.ClickException("Cascade failed for one or more repositories")
 
 
 if __name__ == "__main__":
