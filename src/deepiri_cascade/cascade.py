@@ -136,7 +136,9 @@ class CascadeProcessor:
                 deps = poetry.parse_pyproject_toml(pyproject)
                 for dep_name, dep_repo in deps.items():
                     if dep_repo == source_repo:
-                        if poetry.update_pyproject_toml(pyproject, dep_name, source_tag):
+                        ref_key = poetry.get_dependency_ref_key(pyproject, dep_name)
+                        update_ref = self._source_sha if ref_key == "rev" and self._source_sha else source_tag
+                        if poetry.update_pyproject_toml(pyproject, dep_name, update_ref):
                             console.print(f"    [green]Updated pyproject.toml[/green]")
                             poetry.bump_pyproject_version(pyproject, self.bump_type)
                             self._regenerate_poetry_lock(clone_path)

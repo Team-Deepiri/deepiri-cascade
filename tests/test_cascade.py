@@ -104,6 +104,33 @@ class TestCascadeRunResults:
             "failed": ["repo-failed"],
         }
 
+    def test_update_repo_uses_source_sha_for_poetry_rev_dependency(self, tmp_path):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.bump_type = "patch"
+        proc.dry_run = False
+        proc._source_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        proc._get_or_clone_repo = lambda repo_name: tmp_path
+        proc._regenerate_poetry_lock = lambda clone_path: None
+        proc._create_pull_request = lambda repo_name, clone_path, source_repo, source_tag: "https://example.test/pr"
+
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("""
+[tool.poetry]
+name = "consumer"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+deepiri-gpu-utils = {git = "https://github.com/Team-Deepiri/deepiri-gpu-utils.git", rev = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", extras = ["torch"]}
+""")
+
+        result = proc._update_repo("consumer", "deepiri-gpu-utils", "v1.0.0")
+
+        assert result == "updated"
+        content = pyproject.read_text()
+        assert 'rev = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' in content
+        assert 'version = "0.1.1"' in content
+
 
 class TestTagShaResolution:
     def _make_response(self, status_code, payload):

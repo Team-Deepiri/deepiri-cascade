@@ -59,13 +59,11 @@ def update_pyproject_toml(path: Path, package_name: str, new_version: str, versi
     except FileNotFoundError:
         return False
 
-    new_version_clean = new_version.lstrip("v")
-
     patterns = [
-        (re.compile(rf'({re.escape(package_name)}\s*=\s*\{{[^}}]*rev\s*=\s*["\'])v?[0-9.]+(["\'])', re.IGNORECASE),
-         rf'\g<1>{new_version_clean}\g<2>'),
-        (re.compile(rf'({re.escape(package_name)}\s*=\s*\{{[^}}]*tag\s*=\s*["\'])v?[0-9.]+(["\'])', re.IGNORECASE),
-         rf'\g<1>{new_version_clean}\g<2>'),
+        (re.compile(rf'({re.escape(package_name)}\s*=\s*\{{[^}}]*rev\s*=\s*["\'])([^"\']+)(["\'])', re.IGNORECASE),
+         rf'\g<1>{new_version}\g<3>'),
+        (re.compile(rf'({re.escape(package_name)}\s*=\s*\{{[^}}]*tag\s*=\s*["\'])([^"\']+)(["\'])', re.IGNORECASE),
+         rf'\g<1>{new_version}\g<3>'),
     ]
 
     modified = False
@@ -73,8 +71,8 @@ def update_pyproject_toml(path: Path, package_name: str, new_version: str, versi
     for pattern, replacement in patterns:
         match = pattern.search(new_content)
         if match:
-            current_version = match.group(0).split(match.group(1), 1)[1].rsplit(match.group(2), 1)[0]
-            if current_version.lstrip("v") == new_version_clean:
+            current_version = match.group(2)
+            if current_version == new_version:
                 continue
             new_content = pattern.sub(replacement, new_content)
             modified = True
@@ -84,6 +82,29 @@ def update_pyproject_toml(path: Path, package_name: str, new_version: str, versi
         path.write_text(new_content)
 
     return modified
+
+
+def get_dependency_ref_key(path: Path, package_name: str) -> Optional[str]:
+    """Return whether a Poetry git dependency is pinned with rev or tag."""
+    try:
+        content = path.read_text()
+    except FileNotFoundError:
+        return None
+
+    pattern = re.compile(
+        rf'{re.escape(package_name)}\s*=\s*\{{(?P<body>[^}}]*)\}}',
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(content)
+    if not match:
+        return None
+
+    body = match.group("body")
+    if re.search(r'\brev\s*=', body, re.IGNORECASE):
+        return "rev"
+    if re.search(r'\btag\s*=', body, re.IGNORECASE):
+        return "tag"
+    return None
 
 
 def get_pyproject_version(path: Path) -> Optional[str]:
