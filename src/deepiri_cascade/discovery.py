@@ -207,31 +207,39 @@ class Discovery:
             print(f"Found {len(repo_names)} repos")
 
         graph = {source_repo: []}
+        resolved_deps: Dict[str, List[str]] = {}
 
         for repo_name in repo_names:
             if repo_name == source_repo:
                 continue
 
             deps = self.parse_dependencies(repo_name)
+            resolved_deps[repo_name] = []
 
             for dep_name, dep_value in deps.items():
                 resolved = self._resolve_dep_to_repo(dep_name, dep_value, repo_name_set)
+                if resolved:
+                    resolved_deps[repo_name].append(resolved)
                 if resolved == source_repo:
                     if repo_name not in graph.get(source_repo, []):
                         graph.setdefault(source_repo, []).append(repo_name)
                     graph.setdefault(repo_name, [])
                     break
 
-        for repo_name in repo_names:
-            if repo_name == source_repo:
-                continue
+        changed = True
+        while changed:
+            changed = False
+            for repo_name, resolved_repo_deps in resolved_deps.items():
+                if repo_name == source_repo:
+                    continue
 
-            deps = self.parse_dependencies(repo_name)
-            for dep_name, dep_value in deps.items():
-                resolved = self._resolve_dep_to_repo(dep_name, dep_value, repo_name_set)
-                if resolved and resolved != source_repo and resolved in graph:
-                    if repo_name not in graph.get(resolved, []):
+                for resolved in resolved_repo_deps:
+                    if resolved == source_repo:
+                        continue
+                    if resolved in graph and repo_name not in graph.get(resolved, []):
                         graph.setdefault(resolved, []).append(repo_name)
+                        graph.setdefault(repo_name, [])
+                        changed = True
 
         return graph
 

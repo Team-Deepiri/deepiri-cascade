@@ -173,6 +173,26 @@ class TestBuildDependencyGraph:
         assert "deepiri-api-gateway" in graph["deepiri-shared-utils"]
         assert "deepiri-web-frontend" in graph.get("deepiri-api-gateway", [])
 
+    def test_transitive_deps_are_order_independent(self):
+        d = self._make_discovery({
+            "deepiri-shared-utils": {},
+            "deepiri-admin-ui": {
+                "@team-deepiri/web-frontend": "^1.0.0",
+            },
+            "deepiri-web-frontend": {
+                "@team-deepiri/api-gateway": "^1.0.0",
+            },
+            "deepiri-api-gateway": {
+                "@team-deepiri/shared-utils": "^1.0.0",
+            },
+        })
+
+        graph = d.build_dependency_graph("deepiri-shared-utils", "v1.0.0")
+
+        assert graph["deepiri-shared-utils"] == ["deepiri-api-gateway"]
+        assert graph["deepiri-api-gateway"] == ["deepiri-web-frontend"]
+        assert graph["deepiri-web-frontend"] == ["deepiri-admin-ui"]
+
     def test_legacy_deepiri_scope(self):
         d = self._make_discovery({
             "deepiri-shared-utils": {},
