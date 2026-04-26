@@ -5,7 +5,7 @@ Automated dependency cascading across team-deepiri repositories.
 ## Features
 
 - **Event-Driven**: Real-time updates when tags are pushed
-- **Multi-Format**: npm, Poetry, and git submodules
+- **Multi-Format**: Poetry Git dependencies and git submodules
 - **Wave-Based**: Topological sort ensures correct update order
 - **Zero Config**: No workflow files needed in dependent repos
 - **Cloudflare-Hosted**: Free webhook handling
@@ -66,7 +66,6 @@ deepiri-cascade cascade --repo deepiri-shared-utils --tag v1.2.3 --dry-run
 
 | Manager | File | Updates |
 |---------|------|---------|
-| npm | `package.json` | `@deepiri/*` dependencies |
 | Poetry | `pyproject.toml` | Git deps to team-deepiri |
 | Git | `.gitmodules` | team-deepiri submodules |
 

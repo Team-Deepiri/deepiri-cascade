@@ -226,7 +226,6 @@ Check:
 
 | Manager | Files | What Gets Updated |
 |---------|-------|-------------------|
-| **npm** | `package.json` | `dependencies`, `devDependencies` with `@deepiri/*` |
 | **Poetry** | `pyproject.toml` | Git dependencies (`rev=`, `tag=`) for team-deepiri repos |
 | **Git** | `.gitmodules` | Submodule URLs pointing to team-deepiri |
 
@@ -275,7 +274,7 @@ deepiri-cascade/
 │       ├── cli.py         # CLI entrypoint
 │       ├── discovery.py   # Find dependencies
 │       ├── cascade.py     # Update repos
-│       └── parser/        # npm, poetry, gitmodules
+│       └── parser/        # poetry, gitmodules
 └── .github/
     └── workflows/
         ├── cascade.yml    # Main cascade workflow
