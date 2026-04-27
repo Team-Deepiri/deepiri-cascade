@@ -15,6 +15,7 @@ src/deepiri_cascade.egg-info/requires.txt
 src/deepiri_cascade.egg-info/top_level.txt
 src/deepiri_cascade/parser/__init__.py
 src/deepiri_cascade/parser/gitmodules.py
+src/deepiri_cascade/parser/npm.py
 src/deepiri_cascade/parser/poetry.py
 tests/test_ci_logging.py
 tests/test_parsers.py

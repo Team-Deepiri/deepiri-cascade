@@ -1,4 +1,6 @@
 """Wave-based cascade processor."""
+import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -8,7 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .ci_logging import compute_dependency_waves
-from .parser import poetry, gitmodules
+from .parser import npm, poetry, gitmodules
 
 console = Console()
 
@@ -120,6 +122,15 @@ class CascadeProcessor:
 
             updated = False
 
+            pkg_json = clone_path / "package.json"
+            if pkg_json.exists():
+                pkg_name = self._find_npm_dep_name(pkg_json, source_repo)
+                if pkg_name and npm.update_package_json(pkg_json, pkg_name, source_tag):
+                    console.print(f"    [green]Updated package.json ({pkg_name})[/green]")
+                    npm.bump_package_version(pkg_json, self.bump_type)
+                    self._regenerate_npm_lock(clone_path)
+                    updated = True
+
             pyproject = clone_path / "pyproject.toml"
             if pyproject.exists():
                 deps = poetry.parse_pyproject_toml(pyproject)
@@ -158,6 +169,35 @@ class CascadeProcessor:
         except Exception as e:
             console.print(f"    [red]Error: {e}[/red]")
             return "failed"
+
+    def _find_npm_dep_name(self, pkg_json: Path, source_repo: str) -> Optional[str]:
+        """Find the npm package name in package.json that maps to source_repo.
+
+        Handles the mismatch between repo names (deepiri-shared-utils) and
+        npm scoped names (@team-deepiri/shared-utils).
+        """
+        try:
+            with open(pkg_json) as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            return None
+
+        for prefix in (f"@{self.org}/", "@deepiri/"):
+            for key in ("dependencies", "devDependencies"):
+                if key not in data:
+                    continue
+                for name, version in data[key].items():
+                    if npm.is_local_spec(version):
+                        continue
+                    if not name.startswith(prefix):
+                        continue
+                    base = name[len(prefix):]
+                    if (base == source_repo
+                            or f"deepiri-{base}" == source_repo
+                            or base == source_repo.removeprefix("deepiri-")):
+                        return name
+
+        return None
 
     def _get_or_clone_repo(self, repo_name: str) -> Optional[Path]:
         """Get cached repo or clone it with submodules."""
@@ -268,7 +308,7 @@ class CascadeProcessor:
 
 This PR updates the dependency on `{source_repo}` to version `{source_tag}`.
 
-- Updated pyproject Git dependencies
+- Updated npm/pyproject dependencies
 - Updated submodule refs
 - Regenerated lock files
 - Bumped {self.bump_type} version
@@ -364,6 +404,54 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
         except Exception:
             pass
         return None
+
+    def _inject_npm_auth(self, clone_path: Path):
+        """Inject internal scope registry config and auth token into .npmrc."""
+        npmrc = clone_path / ".npmrc"
+        managed_lines = [
+            "@deepiri:registry=https://npm.pkg.github.com",
+            f"@{self.org}:registry=https://npm.pkg.github.com",
+            "//npm.pkg.github.com/:_authToken="
+            f"{self.token}",
+        ]
+
+        content = npmrc.read_text() if npmrc.exists() else ""
+        existing_lines = [line for line in content.splitlines() if line.strip()]
+        github_packages_auth = re.compile(r"^//npm\.pkg\.github\.com(?::\d+)?/:_authToken=")
+        filtered_lines = [
+            line for line in existing_lines
+            if not (
+                line.startswith("@deepiri:registry=")
+                or line.startswith(f"@{self.org}:registry=")
+                or github_packages_auth.match(line)
+            )
+        ]
+        new_content = "\n".join(filtered_lines + managed_lines) + "\n"
+        npmrc.write_text(new_content)
+
+    def _regenerate_npm_lock(self, clone_path: Path):
+        """Regenerate package-lock.json."""
+        self._inject_npm_auth(clone_path)
+        try:
+            result = subprocess.run(
+                [
+                    "npm",
+                    "install",
+                    "--package-lock-only",
+                    "--workspaces=false",
+                    "--ignore-scripts",
+                ],
+                cwd=clone_path,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode == 0:
+                console.print(f"    [green]Regenerated package-lock.json[/green]")
+            else:
+                console.print(f"    [yellow]npm install warning: {result.stderr[:200]}[/yellow]")
+        except Exception as e:
+            console.print(f"    [yellow]npm install error: {e}[/yellow]")
 
     def _regenerate_poetry_lock(self, clone_path: Path):
         """Regenerate poetry.lock."""

@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import tempfile
 
-from .parser import poetry, gitmodules
+from .parser import npm, poetry, gitmodules
+from .parser.npm import parse_package_lock_json
 from .parser.poetry import parse_poetry_lock
 
 
@@ -119,12 +120,23 @@ class Discovery:
 
         deps = {}
 
+        package_json = self.fetch_file_content(repo_name, "package.json")
+        if package_json:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                f.write(package_json)
+                f.flush()
+                parsed = npm.parse_package_json(Path(f.name), self.org)
+                for name, version in parsed.items():
+                    deps[name] = version
+
         pyproject_toml = self.fetch_file_content(repo_name, "pyproject.toml")
         if pyproject_toml:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
                 f.write(pyproject_toml)
                 f.flush()
                 parsed = poetry.parse_pyproject_toml(Path(f.name))
+                # is_internal_dep is npm-centric; pyproject.toml git URLs are
+                # already filtered to team-deepiri by the parser regex.
                 for name, dep_repo in parsed.items():
                     deps[name] = dep_repo
 
@@ -135,6 +147,14 @@ class Discovery:
                 f.flush()
                 for name, dep_repo in parse_poetry_lock(Path(f.name)).items():
                     deps.setdefault(name, dep_repo)
+
+        package_lock = self.fetch_file_content(repo_name, "package-lock.json")
+        if package_lock:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                f.write(package_lock)
+                f.flush()
+                for name, resolved in parse_package_lock_json(Path(f.name), self.org).items():
+                    deps.setdefault(name, resolved)
 
         gitmodules_content = self.fetch_file_content(repo_name, ".gitmodules")
         if gitmodules_content:
@@ -151,11 +171,24 @@ class Discovery:
     def _resolve_dep_to_repo(self, dep_name: str, dep_value: str, repo_name_set: set) -> Optional[str]:
         """Resolve a dependency entry to a GitHub repo name.
 
-        Poetry parsers and .gitmodules both store the GitHub repo name as the
-        dependency value, so resolution is intentionally conservative.
+        Handles the mismatch between npm package names
+        (e.g. @team-deepiri/shared-utils) and GitHub repo names
+        (e.g. deepiri-shared-utils).
         """
+        if dep_value in {"file:", "workspace:"}:
+            return None
+
         if dep_value in repo_name_set:
             return dep_value
+
+        for prefix in (f"@{self.org}/", "@deepiri/"):
+            if dep_name.startswith(prefix):
+                base_name = dep_name[len(prefix):]
+                if base_name in repo_name_set:
+                    return base_name
+                prefixed = f"deepiri-{base_name}"
+                if prefixed in repo_name_set:
+                    return prefixed
 
         return None
 
