@@ -66,7 +66,7 @@ deepiri-cascade cascade --repo deepiri-shared-utils --tag v1.2.3 --dry-run
 
 | Manager | File | Updates |
 |---------|------|---------|
-| npm | `package.json` | `@deepiri/*` dependencies |
+| npm | `package.json` | Registry-published `@deepiri/*` dependencies |
 | Poetry | `pyproject.toml` | Git deps to team-deepiri |
 | Git | `.gitmodules` | team-deepiri submodules |
 

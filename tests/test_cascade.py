@@ -79,6 +79,24 @@ class TestFindNpmDepName:
         result = self.proc._find_npm_dep_name(pkg, "deepiri-shared-utils")
         assert result == "@team-deepiri/shared-utils"
 
+    def test_ignores_file_dependency(self, tmp_path):
+        pkg = self._write_pkg(tmp_path, {
+            "dependencies": {
+                "@team-deepiri/shared-utils": "file:../../shared/deepiri-shared-utils",
+            },
+        })
+        result = self.proc._find_npm_dep_name(pkg, "deepiri-shared-utils")
+        assert result is None
+
+    def test_ignores_workspace_dependency(self, tmp_path):
+        pkg = self._write_pkg(tmp_path, {
+            "dependencies": {
+                "@team-deepiri/shared-utils": "workspace:*",
+            },
+        })
+        result = self.proc._find_npm_dep_name(pkg, "deepiri-shared-utils")
+        assert result is None
+
 
 class TestCascadeRunResults:
     def test_run_records_updated_skipped_and_failed(self):

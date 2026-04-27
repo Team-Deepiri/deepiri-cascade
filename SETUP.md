@@ -226,7 +226,7 @@ Check:
 
 | Manager | Files | What Gets Updated |
 |---------|-------|-------------------|
-| **npm** | `package.json` | `dependencies`, `devDependencies` with `@deepiri/*` |
+| **npm** | `package.json` | Registry-published `dependencies`, `devDependencies` with `@deepiri/*` |
 | **Poetry** | `pyproject.toml` | Git dependencies (`rev=`, `tag=`) for team-deepiri repos |
 | **Git** | `.gitmodules` | Submodule URLs pointing to team-deepiri |
 

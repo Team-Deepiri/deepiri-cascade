@@ -175,6 +175,9 @@ class Discovery:
         (e.g. @team-deepiri/shared-utils) and GitHub repo names
         (e.g. deepiri-shared-utils).
         """
+        if dep_value in {"file:", "workspace:"}:
+            return None
+
         if dep_value in repo_name_set:
             return dep_value
 

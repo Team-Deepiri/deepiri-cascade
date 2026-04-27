@@ -66,6 +66,16 @@ class TestResolveDepToRepo:
             "@team-deepiri/shared-utils", "1.0.0", REPOS
         ) == "deepiri-shared-utils"
 
+    def test_file_dependency_is_not_resolved(self):
+        assert self.d._resolve_dep_to_repo(
+            "@team-deepiri/shared-utils", "file:", REPOS
+        ) is None
+
+    def test_workspace_dependency_is_not_resolved(self):
+        assert self.d._resolve_dep_to_repo(
+            "@team-deepiri/shared-utils", "workspace:", REPOS
+        ) is None
+
     def test_prefers_exact_match_over_prefixed(self):
         repos_with_both = {"shared-utils", "deepiri-shared-utils"}
         result = self.d._resolve_dep_to_repo(
@@ -121,6 +131,17 @@ class TestBuildDependencyGraph:
         assert "deepiri-api-gateway" in dependents
         assert "deepiri-auth-service" in dependents
         assert "unrelated-repo" not in dependents
+
+    def test_npm_file_deps_are_ignored(self):
+        d = self._make_discovery({
+            "deepiri-shared-utils": {},
+            "deepiri-api-gateway": {
+                "@team-deepiri/shared-utils": "file:",
+            },
+        })
+
+        graph = d.build_dependency_graph("deepiri-shared-utils", "v1.0.0")
+        assert graph["deepiri-shared-utils"] == []
 
     def test_gitmodules_deps_detected(self):
         d = self._make_discovery({

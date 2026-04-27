@@ -96,6 +96,38 @@ class TestNpmParser:
             result = npm.update_package_json(Path(f.name), "@deepiri/shared-utils", "v1.0.0")
             assert result is False
 
+    def test_update_package_json_skips_file_dependency(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({
+                "name": "test",
+                "version": "1.0.0",
+                "dependencies": {
+                    "@team-deepiri/shared-utils": "file:../../shared/deepiri-shared-utils"
+                }
+            }, f)
+            f.flush()
+
+            result = npm.update_package_json(Path(f.name), "@team-deepiri/shared-utils", "v2.0.0")
+            assert result is False
+
+            with open(f.name) as rf:
+                data = json.load(rf)
+            assert data["dependencies"]["@team-deepiri/shared-utils"] == "file:../../shared/deepiri-shared-utils"
+
+    def test_update_package_json_skips_workspace_dependency(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({
+                "name": "test",
+                "version": "1.0.0",
+                "dependencies": {
+                    "@team-deepiri/shared-utils": "workspace:*"
+                }
+            }, f)
+            f.flush()
+
+            result = npm.update_package_json(Path(f.name), "@team-deepiri/shared-utils", "v2.0.0")
+            assert result is False
+
     def test_bump_package_version(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump({"name": "test", "version": "1.2.3"}, f)

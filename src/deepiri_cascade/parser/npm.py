@@ -1,8 +1,14 @@
 """Parser for npm package.json files."""
 import json
-import re
 from pathlib import Path
 from typing import Optional
+
+LOCAL_SPEC_PREFIXES = ("file:", "workspace:")
+
+
+def is_local_spec(version: str) -> bool:
+    """Return True for local dependency specs that cascade must not rewrite."""
+    return isinstance(version, str) and version.startswith(LOCAL_SPEC_PREFIXES)
 
 
 def parse_package_json(path: Path, org: str = "team-deepiri") -> dict:
@@ -65,10 +71,8 @@ def parse_package_lock_json(path: Path, org: str = "team-deepiri") -> dict:
 
 def normalize_version(version: str) -> str:
     """Normalize version string for comparison."""
-    if version.startswith("file:"):
-        return "file:"
-    if version.startswith("workspace:"):
-        return "workspace:"
+    if is_local_spec(version):
+        return version.split(":", 1)[0] + ":"
     if version.startswith("^") or version.startswith("~"):
         return version[1:]
     return version
@@ -86,9 +90,11 @@ def update_package_json(path: Path, package_name: str, new_version: str) -> bool
 
     for key in ["dependencies", "devDependencies"]:
         if key in data and package_name in data[key]:
+            old_version = data[key][package_name]
+            if is_local_spec(old_version):
+                continue
             clean = new_version.lstrip("v") if not new_version.startswith("file:") else new_version
             new_spec = f"^{clean}" if not new_version.startswith("file:") else clean
-            old_version = data[key][package_name]
             if old_version == new_spec:
                 continue
             data[key][package_name] = new_spec

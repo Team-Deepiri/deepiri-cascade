@@ -186,7 +186,9 @@ class CascadeProcessor:
             for key in ("dependencies", "devDependencies"):
                 if key not in data:
                     continue
-                for name in data[key]:
+                for name, version in data[key].items():
+                    if npm.is_local_spec(version):
+                        continue
                     if not name.startswith(prefix):
                         continue
                     base = name[len(prefix):]
