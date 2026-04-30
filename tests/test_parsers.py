@@ -230,6 +230,18 @@ class TestGitmodulesParser:
             assert "libs/deepiri-core" in deps
             assert deps["libs/deepiri-core"] == "deepiri-core"
 
+    def test_parse_gitmodules_matches_org_case_insensitively(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".gitmodules", delete=False) as f:
+            f.write("""
+[submodule "platform-services/shared/deepiri-shared-utils"]
+    path = platform-services/shared/deepiri-shared-utils
+    url = git@github.com:Team-Deepiri/deepiri-shared-utils.git
+""")
+            f.flush()
+
+            deps = gitmodules.parse_gitmodules(Path(f.name))
+            assert deps["platform-services/shared/deepiri-shared-utils"] == "deepiri-shared-utils"
+
     def test_update_gitmodules(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".gitmodules", delete=False) as f:
             f.write("""
