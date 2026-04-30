@@ -200,7 +200,7 @@ class CascadeProcessor:
         return None
 
     def _get_or_clone_repo(self, repo_name: str) -> Optional[Path]:
-        """Get cached repo or clone it with submodules."""
+        """Get cached repo or clone it."""
         if repo_name in self._repo_cache:
             path = self._repo_cache[repo_name]
             self._git_fetch(path, repo_name)
@@ -216,7 +216,7 @@ class CascadeProcessor:
         url = f"https://x-access-token:{self.token}@github.com/{self.org}/{repo_name}.git"
         try:
             result = subprocess.run(
-                ["git", "clone", "--recurse-submodules", "--depth", "1", url, str(clone_path)],
+                ["git", "clone", "--depth", "1", url, str(clone_path)],
                 capture_output=True,
                 text=True,
                 timeout=180,
@@ -224,6 +224,7 @@ class CascadeProcessor:
             if result.returncode != 0:
                 return None
 
+            self._configure_git_auth(clone_path)
             self._repo_cache[repo_name] = clone_path
             return clone_path
 
@@ -485,9 +486,28 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
             timeout=10,
         )
 
+    def _configure_git_auth(self, path: Path):
+        """Configure local Git auth for GitHub submodule URLs."""
+        token_url = f"https://x-access-token:{self.token}@github.com/"
+        key = f"url.{token_url}.insteadOf"
+        subprocess.run(
+            ["git", "config", "--unset-all", key],
+            cwd=path,
+            capture_output=True,
+            timeout=10,
+        )
+        for instead_of in ("git@github.com:", "https://github.com/"):
+            subprocess.run(
+                ["git", "config", "--add", key, instead_of],
+                cwd=path,
+                capture_output=True,
+                timeout=10,
+            )
+
     def _git_fetch(self, path: Path, repo_name: str) -> bool:
         """Fetch latest changes for cached repo."""
         try:
+            self._configure_git_auth(path)
             default_branch = self._get_default_branch(repo_name)
             fetch = subprocess.run(
                 ["git", "fetch", "--all", "--prune"],
@@ -505,12 +525,6 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
             )
             if reset.returncode != 0:
                 return False
-            submodules = subprocess.run(
-                ["git", "submodule", "update", "--init", "--recursive"],
-                cwd=path,
-                capture_output=True,
-                timeout=120,
-            )
-            return submodules.returncode == 0
+            return True
         except Exception:
             return False

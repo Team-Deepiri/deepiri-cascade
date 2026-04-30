@@ -76,11 +76,21 @@ def update_submodule_ref(repo_path: Path, submodule_path: str, new_ref: str) -> 
     Returns:
         True if update was successful, False otherwise
     """
-    submodule_full_path = repo_path / submodule_path
-    if not submodule_full_path.exists():
-        return False
-    
     try:
+        init = subprocess.run(
+            ["git", "submodule", "update", "--init", "--recursive", submodule_path],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if init.returncode != 0:
+            return False
+
+        submodule_full_path = repo_path / submodule_path
+        if not submodule_full_path.exists():
+            return False
+
         fetch = subprocess.run(
             ["git", "fetch", "origin", "--tags", "--force"],
             cwd=submodule_full_path,
