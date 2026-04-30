@@ -26,9 +26,9 @@ def parse_gitmodules(path: Path) -> dict:
         url_match = re.search(r'url\s*=\s*(.+?)$', block, re.MULTILINE)
         if url_match:
             url = url_match.group(1).strip()
-            if "team-deepiri/" in url:
-                parts = url.rsplit("team-deepiri/", 1)
-                repo = parts[-1].removesuffix(".git")
+            repo_match = re.search(r'team-deepiri[/:]([^/]+?)(?:\.git)?$', url, re.IGNORECASE)
+            if repo_match:
+                repo = repo_match.group(1)
                 deps[name] = repo
 
     return deps
