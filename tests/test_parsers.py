@@ -278,18 +278,41 @@ class TestGitmodulesParser:
         result = gitmodules.update_submodule_ref(repo, "libs/deepiri-core", "abc123")
 
         assert result is True
-        assert calls[0][0] == ["git", "fetch", "origin", "--tags", "--force"]
-        assert calls[1][0] == ["git", "checkout", "abc123"]
-        assert calls[0][1]["cwd"] == submodule
+        assert calls[0][0] == ["git", "submodule", "update", "--init", "--recursive", "libs/deepiri-core"]
+        assert calls[0][1]["cwd"] == repo
+        assert calls[1][0] == ["git", "fetch", "origin", "--tags", "--force"]
+        assert calls[2][0] == ["git", "checkout", "abc123"]
+        assert calls[1][1]["cwd"] == submodule
 
     def test_update_submodule_ref_returns_false_when_fetch_fails(self, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
         submodule = repo / "libs" / "deepiri-core"
         submodule.mkdir(parents=True)
+        calls = []
+
+        class Result:
+            def __init__(self, returncode=0, stderr=""):
+                self.returncode = returncode
+                self.stderr = stderr
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == ["git", "fetch"]:
+                return Result(1, "fetch failed")
+            return Result()
+
+        monkeypatch.setattr("deepiri_cascade.parser.gitmodules.subprocess.run", fake_run)
+
+        assert gitmodules.update_submodule_ref(repo, "libs/deepiri-core", "abc123") is False
+        assert calls[1] == ["git", "fetch", "origin", "--tags", "--force"]
+
+    def test_update_submodule_ref_returns_false_when_init_fails(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
 
         class Result:
             returncode = 1
-            stderr = "fetch failed"
+            stderr = "submodule init failed"
 
         def fake_run(cmd, **kwargs):
             return Result()

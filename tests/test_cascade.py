@@ -150,6 +150,55 @@ deepiri-gpu-utils = {git = "https://github.com/Team-Deepiri/deepiri-gpu-utils.gi
         assert 'version = "0.1.1"' in content
 
 
+class TestGitOperations:
+    def test_get_or_clone_repo_does_not_recurse_all_submodules(self, tmp_path, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.token = "secret-token"
+        proc.org = "team-deepiri"
+        proc.work_dir = tmp_path
+        proc._repo_cache = {}
+        calls = []
+
+        class Result:
+            returncode = 0
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            if cmd[:2] == ["git", "clone"]:
+                (tmp_path / "consumer").mkdir()
+            return Result()
+
+        monkeypatch.setattr("deepiri_cascade.cascade.subprocess.run", fake_run)
+
+        result = proc._get_or_clone_repo("consumer")
+
+        assert result == tmp_path / "consumer"
+        clone_cmd = calls[0][0]
+        assert clone_cmd[:2] == ["git", "clone"]
+        assert "--recurse-submodules" not in clone_cmd
+        assert any(call[0][:3] == ["git", "config", "--add"] for call in calls)
+
+    def test_git_fetch_resets_without_updating_all_submodules(self, tmp_path, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.token = "secret-token"
+        proc._get_default_branch = lambda repo_name: "main"
+        calls = []
+
+        class Result:
+            returncode = 0
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return Result()
+
+        monkeypatch.setattr("deepiri_cascade.cascade.subprocess.run", fake_run)
+
+        assert proc._git_fetch(tmp_path, "consumer") is True
+        assert ["git", "submodule", "update", "--init", "--recursive"] not in calls
+        assert ["git", "fetch", "--all", "--prune"] in calls
+        assert ["git", "reset", "--hard", "origin/main"] in calls
+
+
 class TestTagShaResolution:
     def _make_response(self, status_code, payload):
         class Response:
