@@ -121,21 +121,26 @@ class CascadeProcessor:
                 return "failed"
 
             updated = False
+            matched_dependency = False
+            update_failed = False
 
             pkg_json = clone_path / "package.json"
             if pkg_json.exists():
                 pkg_name = self._find_npm_dep_name(pkg_json, source_repo)
-                if pkg_name and npm.update_package_json(pkg_json, pkg_name, source_tag):
-                    console.print(f"    [green]Updated package.json ({pkg_name})[/green]")
-                    npm.bump_package_version(pkg_json, self.bump_type)
-                    self._regenerate_npm_lock(clone_path)
-                    updated = True
+                if pkg_name:
+                    matched_dependency = True
+                    if npm.update_package_json(pkg_json, pkg_name, source_tag):
+                        console.print(f"    [green]Updated package.json ({pkg_name})[/green]")
+                        npm.bump_package_version(pkg_json, self.bump_type)
+                        self._regenerate_npm_lock(clone_path)
+                        updated = True
 
             pyproject = clone_path / "pyproject.toml"
             if pyproject.exists():
                 deps = poetry.parse_pyproject_toml(pyproject)
                 for dep_name, dep_repo in deps.items():
                     if dep_repo == source_repo:
+                        matched_dependency = True
                         ref_key = poetry.get_dependency_ref_key(pyproject, dep_name)
                         update_ref = self._source_sha if ref_key == "rev" and self._source_sha else source_tag
                         if poetry.update_pyproject_toml(pyproject, dep_name, update_ref):
@@ -149,10 +154,16 @@ class CascadeProcessor:
                 deps = gitmodules.parse_gitmodules(gitmodules_file)
                 for submodule_path, dep_repo in deps.items():
                     if dep_repo == source_repo:
+                        matched_dependency = True
                         update_ref = self._source_sha if self._source_sha else source_tag
-                        if gitmodules.update_submodule_ref(clone_path, submodule_path, update_ref):
+                        result = gitmodules.update_submodule_ref_result(clone_path, submodule_path, update_ref)
+                        if result.success:
                             console.print(f"    [green]Updated submodule {submodule_path} to {update_ref[:8] if len(update_ref) > 8 else update_ref}[/green]")
                             updated = True
+                        else:
+                            update_failed = True
+                            message = result.message[:300] if result.message else "no error output"
+                            console.print(f"    [red]Submodule update failed at {result.step}: {message}[/red]")
 
             if updated:
                 pr_url = self._create_pull_request(repo_name, clone_path, source_repo, source_tag)
@@ -162,6 +173,13 @@ class CascadeProcessor:
                 else:
                     console.print(f"    [red]Failed to create PR[/red]")
                     return "failed"
+
+            if update_failed:
+                return "failed"
+
+            if matched_dependency:
+                console.print(f"    [yellow]Dependency already points at requested ref/version[/yellow]")
+                return "skipped"
 
             console.print(f"    [yellow]No matching dependency file update was made[/yellow]")
             return "skipped"

@@ -1,8 +1,16 @@
 """Parser for .gitmodules files."""
+from dataclasses import dataclass
 import re
 import subprocess
 from pathlib import Path
 from typing import Optional
+
+
+@dataclass
+class SubmoduleUpdateResult:
+    success: bool
+    step: str = ""
+    message: str = ""
 
 
 def parse_gitmodules(path: Path) -> dict:
@@ -23,13 +31,15 @@ def parse_gitmodules(path: Path) -> dict:
         name = match.group(1)
         block = match.group(2)
 
+        path_match = re.search(r'path\s*=\s*(.+?)$', block, re.MULTILINE)
         url_match = re.search(r'url\s*=\s*(.+?)$', block, re.MULTILINE)
         if url_match:
             url = url_match.group(1).strip()
             repo_match = re.search(r'team-deepiri[/:]([^/]+?)(?:\.git)?$', url, re.IGNORECASE)
             if repo_match:
                 repo = repo_match.group(1)
-                deps[name] = repo
+                submodule_path = path_match.group(1).strip() if path_match else name
+                deps[submodule_path] = repo
 
     return deps
 
@@ -76,7 +86,26 @@ def update_submodule_ref(repo_path: Path, submodule_path: str, new_ref: str) -> 
     Returns:
         True if update was successful, False otherwise
     """
+    return update_submodule_ref_result(repo_path, submodule_path, new_ref).success
+
+
+def update_submodule_ref_result(
+    repo_path: Path,
+    submodule_path: str,
+    new_ref: str,
+) -> SubmoduleUpdateResult:
+    """Update a submodule and return details when a git step fails."""
     try:
+        sync = subprocess.run(
+            ["git", "submodule", "sync", "--recursive", submodule_path],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if sync.returncode != 0:
+            return SubmoduleUpdateResult(False, "submodule sync", sync.stderr.strip())
+
         init = subprocess.run(
             ["git", "submodule", "update", "--init", "--recursive", submodule_path],
             cwd=repo_path,
@@ -85,11 +114,11 @@ def update_submodule_ref(repo_path: Path, submodule_path: str, new_ref: str) -> 
             timeout=120,
         )
         if init.returncode != 0:
-            return False
+            return SubmoduleUpdateResult(False, "submodule init", init.stderr.strip())
 
         submodule_full_path = repo_path / submodule_path
         if not submodule_full_path.exists():
-            return False
+            return SubmoduleUpdateResult(False, "submodule path", f"{submodule_path} does not exist after init")
 
         fetch = subprocess.run(
             ["git", "fetch", "origin", "--tags", "--force"],
@@ -99,8 +128,8 @@ def update_submodule_ref(repo_path: Path, submodule_path: str, new_ref: str) -> 
             timeout=60,
         )
         if fetch.returncode != 0:
-            return False
-        
+            return SubmoduleUpdateResult(False, "submodule fetch", fetch.stderr.strip())
+
         result = subprocess.run(
             ["git", "checkout", new_ref],
             cwd=submodule_full_path,
@@ -108,7 +137,7 @@ def update_submodule_ref(repo_path: Path, submodule_path: str, new_ref: str) -> 
             text=True,
             timeout=30,
         )
-        
+
         if result.returncode != 0:
             if "did not match" in result.stderr or "failed" in result.stderr:
                 result = subprocess.run(
@@ -119,14 +148,16 @@ def update_submodule_ref(repo_path: Path, submodule_path: str, new_ref: str) -> 
                     timeout=30,
                 )
                 if result.returncode != 0:
-                    return False
+                    return SubmoduleUpdateResult(False, "submodule checkout", result.stderr.strip())
             else:
-                return False
-        
-        return True
-        
-    except Exception:
-        return False
+                return SubmoduleUpdateResult(False, "submodule checkout", result.stderr.strip())
+
+        return SubmoduleUpdateResult(True)
+
+    except subprocess.TimeoutExpired as e:
+        return SubmoduleUpdateResult(False, "submodule timeout", str(e))
+    except Exception as e:
+        return SubmoduleUpdateResult(False, "submodule exception", str(e))
 
 
 def get_submodule_current_ref(repo_path: Path, submodule_path: str) -> Optional[str]:

@@ -149,6 +149,59 @@ deepiri-gpu-utils = {git = "https://github.com/Team-Deepiri/deepiri-gpu-utils.gi
         assert 'rev = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' in content
         assert 'version = "0.1.1"' in content
 
+    def test_update_repo_fails_when_matching_submodule_update_fails(self, tmp_path, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc.bump_type = "patch"
+        proc.dry_run = False
+        proc._source_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        proc._get_or_clone_repo = lambda repo_name: tmp_path
+
+        (tmp_path / ".gitmodules").write_text("""
+[submodule "platform-services/shared/deepiri-shared-utils"]
+    path = platform-services/shared/deepiri-shared-utils
+    url = git@github.com:Team-Deepiri/deepiri-shared-utils.git
+""")
+
+        result_cls = __import__(
+            "deepiri_cascade.parser.gitmodules",
+            fromlist=["SubmoduleUpdateResult"],
+        ).SubmoduleUpdateResult
+
+        monkeypatch.setattr(
+            "deepiri_cascade.parser.gitmodules.update_submodule_ref_result",
+            lambda *args: result_cls(False, "submodule init", "auth failed"),
+        )
+
+        result = proc._update_repo(
+            "deepiri-platform",
+            "deepiri-shared-utils",
+            "v1.2.3",
+        )
+
+        assert result == "failed"
+
+    def test_update_repo_skips_when_matching_dependency_is_already_current(self, tmp_path):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc.bump_type = "patch"
+        proc.dry_run = False
+        proc._source_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        proc._get_or_clone_repo = lambda repo_name: tmp_path
+
+        pkg = tmp_path / "package.json"
+        pkg.write_text(json.dumps({
+            "dependencies": {"@team-deepiri/shared-utils": "^1.2.3"},
+        }))
+
+        result = proc._update_repo(
+            "consumer",
+            "deepiri-shared-utils",
+            "v1.2.3",
+        )
+
+        assert result == "skipped"
+
 
 class TestGitOperations:
     def test_get_or_clone_repo_does_not_recurse_all_submodules(self, tmp_path, monkeypatch):
