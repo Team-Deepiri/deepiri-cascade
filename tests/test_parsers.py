@@ -242,6 +242,19 @@ class TestGitmodulesParser:
             deps = gitmodules.parse_gitmodules(Path(f.name))
             assert deps["platform-services/shared/deepiri-shared-utils"] == "deepiri-shared-utils"
 
+    def test_parse_gitmodules_uses_path_when_header_differs(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".gitmodules", delete=False) as f:
+            f.write("""
+[submodule "shared-utils"]
+    path = platform-services/shared/deepiri-shared-utils
+    url = git@github.com:Team-Deepiri/deepiri-shared-utils.git
+""")
+            f.flush()
+
+            deps = gitmodules.parse_gitmodules(Path(f.name))
+            assert deps["platform-services/shared/deepiri-shared-utils"] == "deepiri-shared-utils"
+            assert "shared-utils" not in deps
+
     def test_update_gitmodules(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".gitmodules", delete=False) as f:
             f.write("""
@@ -278,11 +291,12 @@ class TestGitmodulesParser:
         result = gitmodules.update_submodule_ref(repo, "libs/deepiri-core", "abc123")
 
         assert result is True
-        assert calls[0][0] == ["git", "submodule", "update", "--init", "--recursive", "libs/deepiri-core"]
+        assert calls[0][0] == ["git", "submodule", "sync", "--recursive", "libs/deepiri-core"]
         assert calls[0][1]["cwd"] == repo
-        assert calls[1][0] == ["git", "fetch", "origin", "--tags", "--force"]
-        assert calls[2][0] == ["git", "checkout", "abc123"]
-        assert calls[1][1]["cwd"] == submodule
+        assert calls[1][0] == ["git", "submodule", "update", "--init", "--recursive", "libs/deepiri-core"]
+        assert calls[2][0] == ["git", "fetch", "origin", "--tags", "--force"]
+        assert calls[3][0] == ["git", "checkout", "abc123"]
+        assert calls[2][1]["cwd"] == submodule
 
     def test_update_submodule_ref_returns_false_when_fetch_fails(self, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
@@ -304,7 +318,7 @@ class TestGitmodulesParser:
         monkeypatch.setattr("deepiri_cascade.parser.gitmodules.subprocess.run", fake_run)
 
         assert gitmodules.update_submodule_ref(repo, "libs/deepiri-core", "abc123") is False
-        assert calls[1] == ["git", "fetch", "origin", "--tags", "--force"]
+        assert calls[2] == ["git", "fetch", "origin", "--tags", "--force"]
 
     def test_update_submodule_ref_returns_false_when_init_fails(self, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
