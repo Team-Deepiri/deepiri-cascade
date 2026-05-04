@@ -10,6 +10,73 @@ Automated dependency cascading across team-deepiri repositories.
 - **Zero Config**: No workflow files needed in dependent repos
 - **Cloudflare-Hosted**: Free webhook handling
 
+## CodeQL Security Scanning
+
+This repository includes GitHub CodeQL analysis for both Python and JavaScript/TypeScript code.
+
+- Workflow file: `.github/workflows/codeql.yml`
+- Config file: `.github/codeql/codeql-config.yml`
+- Triggers: `push` and `pull_request` on `main` and `dev`
+- Languages scanned: `python`, `javascript-typescript`
+
+### Workflow
+
+```yaml
+name: CodeQL
+
+on:
+	pull_request:
+		branches: [main, dev]
+	push:
+		branches: [main, dev]
+
+permissions:
+	actions: read
+	contents: read
+	security-events: write
+
+jobs:
+	analyze:
+		name: Analyze (${{ matrix.language }})
+		runs-on: ubuntu-latest
+		strategy:
+			fail-fast: false
+			matrix:
+				language: [python, javascript-typescript]
+
+		steps:
+			- name: Checkout repository
+				uses: actions/checkout@v4
+				with:
+					fetch-depth: 0
+
+			- name: Initialize CodeQL
+				uses: github/codeql-action/init@v3
+				with:
+					languages: ${{ matrix.language }}
+					config-file: ./.github/codeql/codeql-config.yml
+
+			- name: Perform CodeQL Analysis
+				uses: github/codeql-action/analyze@v3
+```
+
+### CodeQL Config
+
+```yaml
+# Exclude generated/build/runtime artifact paths.
+paths-ignore:
+	- '**/node_modules/**'
+	- '**/dist/**'
+	- '**/build/**'
+	- '**/coverage/**'
+	- '**/logs/**'
+	- '**/*.min.js'
+	- '**/__pycache__/**'
+	- '**/*.egg-info/**'
+```
+
+This keeps analysis focused on source code under `src/` and `worker/` while excluding generated and runtime artifacts.
+
 ## Quick Setup
 
 ### 1. Create GitHub App
