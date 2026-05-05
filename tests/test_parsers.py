@@ -298,6 +298,34 @@ class TestGitmodulesParser:
         assert calls[3][0] == ["git", "checkout", "abc123"]
         assert calls[2][1]["cwd"] == submodule
 
+    def test_update_submodule_ref_accepts_git_config_args(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        submodule = repo / "libs" / "deepiri-core"
+        submodule.mkdir(parents=True)
+        calls = []
+
+        class Result:
+            returncode = 0
+            stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return Result()
+
+        monkeypatch.setattr("deepiri_cascade.parser.gitmodules.subprocess.run", fake_run)
+
+        result = gitmodules.update_submodule_ref_result(
+            repo,
+            "libs/deepiri-core",
+            "abc123",
+            git_config=["-c", "url.https://token@github.com/.insteadOf=git@github.com:"],
+        )
+
+        assert result.success is True
+        assert calls[0][:3] == ["git", "-c", "url.https://token@github.com/.insteadOf=git@github.com:"]
+        assert "submodule" in calls[0]
+        assert calls[1][:3] == ["git", "-c", "url.https://token@github.com/.insteadOf=git@github.com:"]
+
     def test_update_submodule_ref_returns_false_when_fetch_fails(self, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
         submodule = repo / "libs" / "deepiri-core"

@@ -93,11 +93,14 @@ def update_submodule_ref_result(
     repo_path: Path,
     submodule_path: str,
     new_ref: str,
+    git_config: Optional[list[str]] = None,
 ) -> SubmoduleUpdateResult:
     """Update a submodule and return details when a git step fails."""
+    git_prefix = ["git", *(git_config or [])]
+
     try:
         sync = subprocess.run(
-            ["git", "submodule", "sync", "--recursive", submodule_path],
+            [*git_prefix, "submodule", "sync", "--recursive", submodule_path],
             cwd=repo_path,
             capture_output=True,
             text=True,
@@ -107,7 +110,7 @@ def update_submodule_ref_result(
             return SubmoduleUpdateResult(False, "submodule sync", sync.stderr.strip())
 
         init = subprocess.run(
-            ["git", "submodule", "update", "--init", "--recursive", submodule_path],
+            [*git_prefix, "submodule", "update", "--init", "--recursive", submodule_path],
             cwd=repo_path,
             capture_output=True,
             text=True,
@@ -121,7 +124,7 @@ def update_submodule_ref_result(
             return SubmoduleUpdateResult(False, "submodule path", f"{submodule_path} does not exist after init")
 
         fetch = subprocess.run(
-            ["git", "fetch", "origin", "--tags", "--force"],
+            [*git_prefix, "fetch", "origin", "--tags", "--force"],
             cwd=submodule_full_path,
             capture_output=True,
             text=True,
@@ -131,7 +134,7 @@ def update_submodule_ref_result(
             return SubmoduleUpdateResult(False, "submodule fetch", fetch.stderr.strip())
 
         result = subprocess.run(
-            ["git", "checkout", new_ref],
+            [*git_prefix, "checkout", new_ref],
             cwd=submodule_full_path,
             capture_output=True,
             text=True,
@@ -141,7 +144,7 @@ def update_submodule_ref_result(
         if result.returncode != 0:
             if "did not match" in result.stderr or "failed" in result.stderr:
                 result = subprocess.run(
-                    ["git", "checkout", "-f", new_ref],
+                    [*git_prefix, "checkout", "-f", new_ref],
                     cwd=submodule_full_path,
                     capture_output=True,
                     text=True,

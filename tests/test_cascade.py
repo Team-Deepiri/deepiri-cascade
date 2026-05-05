@@ -251,6 +251,19 @@ class TestGitOperations:
         assert ["git", "fetch", "--all", "--prune"] in calls
         assert ["git", "reset", "--hard", "origin/main"] in calls
 
+    def test_git_auth_config_args_rewrites_ssh_and_https_github_urls(self):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.token = "secret-token"
+
+        args = proc._git_auth_config_args()
+
+        assert args == [
+            "-c",
+            "url.https://x-access-token:secret-token@github.com/.insteadOf=git@github.com:",
+            "-c",
+            "url.https://x-access-token:secret-token@github.com/.insteadOf=https://github.com/",
+        ]
+
 
 class TestTagShaResolution:
     def _make_response(self, status_code, payload):
