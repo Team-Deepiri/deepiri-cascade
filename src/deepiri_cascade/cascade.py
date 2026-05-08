@@ -156,7 +156,12 @@ class CascadeProcessor:
                     if dep_repo == source_repo:
                         matched_dependency = True
                         update_ref = self._source_sha if self._source_sha else source_tag
-                        result = gitmodules.update_submodule_ref_result(clone_path, submodule_path, update_ref)
+                        result = gitmodules.update_submodule_ref_result(
+                            clone_path,
+                            submodule_path,
+                            update_ref,
+                            git_config=self._git_auth_config_args(),
+                        )
                         if result.success:
                             console.print(f"    [green]Updated submodule {submodule_path} to {update_ref[:8] if len(update_ref) > 8 else update_ref}[/green]")
                             updated = True
@@ -521,6 +526,16 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
                 capture_output=True,
                 timeout=10,
             )
+
+    def _git_auth_config_args(self) -> list[str]:
+        """Return per-command Git config args for authenticated GitHub URLs."""
+        token_url = f"https://x-access-token:{self.token}@github.com/"
+        return [
+            "-c",
+            f"url.{token_url}.insteadOf=git@github.com:",
+            "-c",
+            f"url.{token_url}.insteadOf=https://github.com/",
+        ]
 
     def _git_fetch(self, path: Path, repo_name: str) -> bool:
         """Fetch latest changes for cached repo."""
