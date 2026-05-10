@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .ci_logging import compute_dependency_waves
+from .manifest import iter_package_manifests
 from .parser import npm, poetry, gitmodules
 
 console = Console()
@@ -35,6 +36,9 @@ class CascadeProcessor:
         self._source_sha: Optional[str] = None
         self._source_repo: Optional[str] = None
         self._source_tag: Optional[str] = None
+        self._cascade_refs: Dict[str, str] = {}
+        self._active_target_refs: Dict[str, str] = {}
+        self._last_bumped_version: Optional[str] = None
 
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.headers = {
@@ -54,6 +58,7 @@ class CascadeProcessor:
         self._source_repo = source_repo
         self._source_tag = source_tag
         self._source_sha = self._get_tag_sha(source_repo, source_tag)
+        self._cascade_refs = {source_repo: source_tag}
         
         if self._source_sha:
             if self.verbose:
@@ -91,15 +96,34 @@ class CascadeProcessor:
             console.print(f"\n[cyan]Processing Wave {wave_idx}...[/cyan]")
 
             for repo in wave:
-                status = self._update_repo(repo, source_repo, source_tag)
+                target_refs = self._target_refs_for_repo(dependency_graph, repo)
+                primary_repo = next(iter(target_refs), source_repo)
+                primary_ref = target_refs.get(primary_repo, source_tag)
+                self._active_target_refs = target_refs or {source_repo: source_tag}
+                status = self._update_repo(repo, primary_repo, primary_ref)
                 if status == "updated":
                     results["updated"].append(repo)
+                    bumped_version = getattr(self, "_last_bumped_version", None)
+                    if bumped_version:
+                        self._cascade_refs[repo] = f"v{bumped_version}"
                 elif status == "skipped":
                     results["skipped"].append(repo)
                 else:
                     results["failed"].append(repo)
 
         return results
+
+    def _target_refs_for_repo(
+        self,
+        dependency_graph: Dict[str, List[str]],
+        repo_name: str,
+    ) -> Dict[str, str]:
+        """Find already-cascaded upstream repos that this repo depends on."""
+        refs = {}
+        for upstream_repo, dependents in dependency_graph.items():
+            if repo_name in dependents and upstream_repo in self._cascade_refs:
+                refs[upstream_repo] = self._cascade_refs[upstream_repo]
+        return refs
 
     def _update_repo(
         self,
@@ -109,9 +133,12 @@ class CascadeProcessor:
     ) -> str:
         """Update a single dependent repo."""
         console.print(f"  Updating {repo_name}...")
+        self._last_bumped_version = None
+        target_refs = getattr(self, "_active_target_refs", None) or {source_repo: source_tag}
 
         if self.dry_run:
-            console.print(f"    [dim](dry-run) Would update {source_repo} -> {source_tag}[/dim]")
+            refs = ", ".join(f"{repo} -> {ref}" for repo, ref in target_refs.items())
+            console.print(f"    [dim](dry-run) Would update {refs}[/dim]")
             return "updated"
 
         try:
@@ -124,51 +151,56 @@ class CascadeProcessor:
             matched_dependency = False
             update_failed = False
 
-            pkg_json = clone_path / "package.json"
-            if pkg_json.exists():
-                pkg_name = self._find_npm_dep_name(pkg_json, source_repo)
-                if pkg_name:
-                    matched_dependency = True
-                    if npm.update_package_json(pkg_json, pkg_name, source_tag):
-                        console.print(f"    [green]Updated package.json ({pkg_name})[/green]")
-                        npm.bump_package_version(pkg_json, self.bump_type)
-                        self._regenerate_npm_lock(clone_path)
-                        updated = True
+            for manifest in iter_package_manifests(clone_path):
+                if manifest.kind == "npm":
+                    for target_repo, target_ref in target_refs.items():
+                        pkg_name = self._find_npm_dep_name(manifest.path, target_repo)
+                        if pkg_name:
+                            matched_dependency = True
+                            if npm.update_package_json(manifest.path, pkg_name, target_ref):
+                                console.print(f"    [green]Updated {manifest.path.relative_to(clone_path)} ({pkg_name})[/green]")
+                                bumped = npm.bump_package_version(manifest.path, self.bump_type)
+                                self._remember_bumped_version(bumped)
+                                self._regenerate_npm_lock(manifest.project_dir)
+                                updated = True
 
-            pyproject = clone_path / "pyproject.toml"
-            if pyproject.exists():
-                deps = poetry.parse_pyproject_toml(pyproject)
-                for dep_name, dep_repo in deps.items():
-                    if dep_repo == source_repo:
-                        matched_dependency = True
-                        ref_key = poetry.get_dependency_ref_key(pyproject, dep_name)
-                        update_ref = self._source_sha if ref_key == "rev" and self._source_sha else source_tag
-                        if poetry.update_pyproject_toml(pyproject, dep_name, update_ref):
-                            console.print(f"    [green]Updated pyproject.toml[/green]")
-                            poetry.bump_pyproject_version(pyproject, self.bump_type)
-                            self._regenerate_poetry_lock(clone_path)
-                            updated = True
+                elif manifest.kind == "poetry":
+                    deps = poetry.parse_pyproject_toml(manifest.path)
+                    for dep_name, dep_repo in deps.items():
+                        if dep_repo in target_refs:
+                            matched_dependency = True
+                            ref_key = poetry.get_dependency_ref_key(manifest.path, dep_name)
+                            target_ref = target_refs[dep_repo]
+                            source_repo_for_run = getattr(self, "_source_repo", source_repo)
+                            update_ref = self._source_sha if dep_repo == source_repo_for_run and ref_key == "rev" and self._source_sha else target_ref
+                            if poetry.update_pyproject_toml(manifest.path, dep_name, update_ref):
+                                console.print(f"    [green]Updated {manifest.path.relative_to(clone_path)}[/green]")
+                                bumped = poetry.bump_pyproject_version(manifest.path, self.bump_type)
+                                self._remember_bumped_version(bumped)
+                                self._regenerate_poetry_lock(manifest.project_dir)
+                                updated = True
 
-            gitmodules_file = clone_path / ".gitmodules"
-            if gitmodules_file.exists():
-                deps = gitmodules.parse_gitmodules(gitmodules_file)
-                for submodule_path, dep_repo in deps.items():
-                    if dep_repo == source_repo:
-                        matched_dependency = True
-                        update_ref = self._source_sha if self._source_sha else source_tag
-                        result = gitmodules.update_submodule_ref_result(
-                            clone_path,
-                            submodule_path,
-                            update_ref,
-                            git_config=self._git_auth_config_args(),
-                        )
-                        if result.success:
-                            console.print(f"    [green]Updated submodule {submodule_path} to {update_ref[:8] if len(update_ref) > 8 else update_ref}[/green]")
-                            updated = True
-                        else:
-                            update_failed = True
-                            message = result.message[:300] if result.message else "no error output"
-                            console.print(f"    [red]Submodule update failed at {result.step}: {message}[/red]")
+                elif manifest.kind == "gitmodules":
+                    deps = gitmodules.parse_gitmodules(manifest.path)
+                    for submodule_path, dep_repo in deps.items():
+                        if dep_repo in target_refs:
+                            matched_dependency = True
+                            target_ref = target_refs[dep_repo]
+                            source_repo_for_run = getattr(self, "_source_repo", source_repo)
+                            update_ref = self._source_sha if dep_repo == source_repo_for_run and self._source_sha else target_ref
+                            result = gitmodules.update_submodule_ref_result(
+                                manifest.project_dir,
+                                submodule_path,
+                                update_ref,
+                                git_config=self._maybe_git_auth_config_args(),
+                            )
+                            if result.success:
+                                console.print(f"    [green]Updated submodule {submodule_path} to {update_ref[:8] if len(update_ref) > 8 else update_ref}[/green]")
+                                updated = True
+                            else:
+                                update_failed = True
+                                message = result.message[:300] if result.message else "no error output"
+                                console.print(f"    [red]Submodule update failed at {result.step}: {message}[/red]")
 
             if updated:
                 pr_url = self._create_pull_request(repo_name, clone_path, source_repo, source_tag)
@@ -192,6 +224,10 @@ class CascadeProcessor:
         except Exception as e:
             console.print(f"    [red]Error: {e}[/red]")
             return "failed"
+
+    def _remember_bumped_version(self, version: Optional[str]):
+        if version and not self._last_bumped_version:
+            self._last_bumped_version = version
 
     def _find_npm_dep_name(self, pkg_json: Path, source_repo: str) -> Optional[str]:
         """Find the npm package name in package.json that maps to source_repo.
@@ -536,6 +572,11 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
             "-c",
             f"url.{token_url}.insteadOf=https://github.com/",
         ]
+
+    def _maybe_git_auth_config_args(self) -> list[str]:
+        if not getattr(self, "token", None):
+            return []
+        return self._git_auth_config_args()
 
     def _git_fetch(self, path: Path, repo_name: str) -> bool:
         """Fetch latest changes for cached repo."""
