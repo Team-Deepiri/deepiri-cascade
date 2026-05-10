@@ -1,4 +1,5 @@
 import click
+from pathlib import Path
 
 from rich.console import Console
 
@@ -69,6 +70,51 @@ def cascade(ctx, repo, tag, org, token, bump_type, dry_run, no_confirm, work_dir
     if results.get("failed"):
         console.print(f"[red]✗ Failed: {len(results['failed'])}[/red]")
         raise click.ClickException("Cascade failed for one or more repositories")
+
+
+@main.command()
+@click.option("--path", "project_path", default=".", help="Local repo/package path to release")
+@click.option("--bump-type", type=click.Choice(["patch", "minor", "major"]), default="patch")
+@click.option("--dry-run", is_flag=True, help="Preview the version/tag without committing")
+@click.option("--no-push", is_flag=True, help="Create the local commit/tag without pushing")
+@click.option("--message", help="Annotated tag message")
+def release(project_path, bump_type, dry_run, no_push, message):
+    """Bump the local project version, commit it, tag it, and optionally push."""
+    from .release import (
+        bump_project_version,
+        commit_release,
+        create_git_tag,
+        ensure_clean_worktree,
+        plan_project_version,
+        push_release,
+    )
+
+    path = Path(project_path).resolve()
+
+    if dry_run:
+        result = plan_project_version(path, bump_type)
+        console.print(
+            f"[green]Would bump {result.manifest_path.relative_to(path)} to {result.version} ({result.tag})[/green]"
+        )
+        return
+
+    ensure_clean_worktree(path)
+
+    result = bump_project_version(path, bump_type)
+    console.print(
+        f"[green]Bumped {result.manifest_path.relative_to(path)} to {result.version} ({result.tag})[/green]"
+    )
+
+    commit_release(path, result.tag, result.manifest_path)
+    create_git_tag(path, result.tag, message)
+    console.print(f"[green]Created release commit and tag {result.tag}[/green]")
+
+    if no_push:
+        console.print("[yellow]Skipped push (--no-push)[/yellow]")
+        return
+
+    push_release(path, result.tag)
+    console.print(f"[green]Pushed HEAD and {result.tag}[/green]")
 
 
 if __name__ == "__main__":

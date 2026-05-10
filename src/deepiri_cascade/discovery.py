@@ -113,11 +113,106 @@ class Discovery:
         
         return None
 
+    def list_manifest_paths(self, repo_name: str) -> List[str]:
+        """List dependency manifest files anywhere in the repo."""
+        branch = self.get_repo_default_branch(repo_name)
+        url = f"https://api.github.com/repos/{self.org}/{repo_name}/git/trees/{branch}"
+        response = httpx.get(
+            url,
+            headers=self.headers,
+            params={"recursive": "1"},
+            timeout=30,
+        )
+        if response.status_code != 200:
+            return []
+
+        data = response.json()
+        paths = []
+        for item in data.get("tree", []):
+            if item.get("type") != "blob":
+                continue
+            path = item.get("path", "")
+            if "/node_modules/" in f"/{path}/" or "/.venv/" in f"/{path}/":
+                continue
+            if path.endswith(("package.json", "package-lock.json", "pyproject.toml", "poetry.lock")) or path.endswith(".gitmodules"):
+                paths.append(path)
+        return paths
+
     def parse_dependencies(self, repo_name: str) -> Dict[str, str]:
         """Parse dependencies from a repo's package files."""
         if repo_name in self._deps_cache:
             return self._deps_cache[repo_name]
 
+        deps = {}
+        manifest_paths = self.list_manifest_paths(repo_name)
+        if not manifest_paths:
+            manifest_paths = [
+                "package.json",
+                "pyproject.toml",
+                "poetry.lock",
+                "package-lock.json",
+                ".gitmodules",
+            ]
+
+        for manifest_path in manifest_paths:
+            content = self.fetch_file_content(repo_name, manifest_path)
+            if not content:
+                continue
+
+            if manifest_path.endswith("package.json"):
+                self._merge_package_json_deps(content, deps)
+            elif manifest_path.endswith("pyproject.toml"):
+                self._merge_pyproject_deps(content, deps)
+            elif manifest_path.endswith("poetry.lock"):
+                self._merge_poetry_lock_deps(content, deps)
+            elif manifest_path.endswith("package-lock.json"):
+                self._merge_package_lock_deps(content, deps)
+            elif manifest_path.endswith(".gitmodules"):
+                self._merge_gitmodules_deps(content, deps)
+
+        self._deps_cache[repo_name] = deps
+        return deps
+
+    def _merge_package_json_deps(self, content: str, deps: Dict[str, str]) -> None:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write(content)
+            f.flush()
+            parsed = npm.parse_package_json(Path(f.name), self.org)
+            for name, version in parsed.items():
+                deps[name] = version
+
+    def _merge_pyproject_deps(self, content: str, deps: Dict[str, str]) -> None:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+            f.write(content)
+            f.flush()
+            parsed = poetry.parse_pyproject_toml(Path(f.name))
+            for name, dep_repo in parsed.items():
+                deps[name] = dep_repo
+
+    def _merge_poetry_lock_deps(self, content: str, deps: Dict[str, str]) -> None:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".lock", delete=False) as f:
+            f.write(content)
+            f.flush()
+            for name, dep_repo in parse_poetry_lock(Path(f.name)).items():
+                deps.setdefault(name, dep_repo)
+
+    def _merge_package_lock_deps(self, content: str, deps: Dict[str, str]) -> None:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write(content)
+            f.flush()
+            for name, resolved in parse_package_lock_json(Path(f.name), self.org).items():
+                deps.setdefault(name, resolved)
+
+    def _merge_gitmodules_deps(self, content: str, deps: Dict[str, str]) -> None:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".gitmodules", delete=False) as f:
+            f.write(content)
+            f.flush()
+            parsed = gitmodules.parse_gitmodules(Path(f.name))
+            for submodule_path, dep_repo in parsed.items():
+                deps[submodule_path] = dep_repo
+
+    def parse_root_dependencies(self, repo_name: str) -> Dict[str, str]:
+        """Parse only root dependencies. Kept for callers that need old behavior."""
         deps = {}
 
         package_json = self.fetch_file_content(repo_name, "package.json")
@@ -165,7 +260,6 @@ class Discovery:
                 for submodule_path, dep_repo in parsed.items():
                     deps[submodule_path] = dep_repo
 
-        self._deps_cache[repo_name] = deps
         return deps
 
     def _resolve_dep_to_repo(self, dep_name: str, dep_value: str, repo_name_set: set) -> Optional[str]:
