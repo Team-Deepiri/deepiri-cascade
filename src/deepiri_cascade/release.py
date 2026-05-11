@@ -43,6 +43,12 @@ def plan_project_version(path: Path, bump_type: str) -> ReleaseResult:
     package_json = path / "package.json"
     pyproject = path / "pyproject.toml"
 
+    if pyproject.exists():
+        current = poetry.get_pyproject_version(pyproject)
+        if current:
+            version = _next_version(current, bump_type)
+            return ReleaseResult(version=version, tag=f"v{version}", manifest_path=pyproject)
+
     if package_json.exists():
         current = npm.get_package_version(package_json)
         if not current:
@@ -51,11 +57,7 @@ def plan_project_version(path: Path, bump_type: str) -> ReleaseResult:
         return ReleaseResult(version=version, tag=f"v{version}", manifest_path=package_json)
 
     if pyproject.exists():
-        current = poetry.get_pyproject_version(pyproject)
-        if not current:
-            raise ValueError(f"Could not read pyproject version in {pyproject}")
-        version = _next_version(current, bump_type)
-        return ReleaseResult(version=version, tag=f"v{version}", manifest_path=pyproject)
+        raise ValueError(f"Could not read pyproject version in {pyproject}")
 
     raise FileNotFoundError(f"No package.json or pyproject.toml found in {path}")
 
@@ -66,6 +68,12 @@ def bump_project_version(path: Path, bump_type: str) -> ReleaseResult:
     package_json = path / "package.json"
     pyproject = path / "pyproject.toml"
 
+    if pyproject.exists() and poetry.get_pyproject_version(pyproject):
+        version = poetry.bump_pyproject_version(pyproject, bump_type)
+        if not version:
+            raise ValueError(f"Could not bump pyproject version in {pyproject}")
+        return ReleaseResult(version=version, tag=f"v{version}", manifest_path=pyproject)
+
     if package_json.exists():
         version = npm.bump_package_version(package_json, bump_type)
         if not version:
@@ -73,10 +81,7 @@ def bump_project_version(path: Path, bump_type: str) -> ReleaseResult:
         return ReleaseResult(version=version, tag=f"v{version}", manifest_path=package_json)
 
     if pyproject.exists():
-        version = poetry.bump_pyproject_version(pyproject, bump_type)
-        if not version:
-            raise ValueError(f"Could not bump pyproject version in {pyproject}")
-        return ReleaseResult(version=version, tag=f"v{version}", manifest_path=pyproject)
+        raise ValueError(f"Could not read pyproject version in {pyproject}")
 
     raise FileNotFoundError(f"No package.json or pyproject.toml found in {path}")
 
