@@ -323,7 +323,8 @@ class TestNpmAuthInjection:
         content = (tmp_path / ".npmrc").read_text()
         assert "@deepiri:registry=https://npm.pkg.github.com" in content
         assert "@team-deepiri:registry=https://npm.pkg.github.com" in content
-        assert "//npm.pkg.github.com/:_authToken=secret-token" in content
+        assert "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" in content
+        assert "secret-token" not in content
 
     def test_inject_npm_auth_replaces_old_managed_lines(self, tmp_path):
         proc = CascadeProcessor.__new__(CascadeProcessor)
@@ -345,7 +346,8 @@ class TestNpmAuthInjection:
         assert "@team-deepiri:registry=https://old.example" not in content
         assert "//npm.pkg.github.com/:_authToken=old-token" not in content
         assert "save-exact=true" in content
-        assert "//npm.pkg.github.com/:_authToken=new-token" in content
+        assert "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" in content
+        assert "new-token" not in content
 
 
 class TestNpmLockRegeneration:
@@ -374,3 +376,4 @@ class TestNpmLockRegeneration:
             "--workspaces=false",
             "--ignore-scripts",
         ]
+        assert calls[0][1]["env"]["NODE_AUTH_TOKEN"] == "secret-token"

@@ -1,5 +1,6 @@
 """Wave-based cascade processor."""
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -321,6 +322,16 @@ class CascadeProcessor:
             if not result.stdout.strip():
                 return None
 
+            leak_check = subprocess.run(
+                ["git", "diff", "--cached"],
+                cwd=clone_path,
+                capture_output=True,
+                text=True,
+            )
+            if re.search(r"gh[spru]_[A-Za-z0-9_]+", leak_check.stdout):
+                console.print("    [red]Refusing to commit: staged diff contains a GitHub token[/red]")
+                return None
+
             commit_msg = f"deps: update {self._source_repo} → {self._source_tag}"
             commit = subprocess.run(
                 ["git", "commit", "-m", commit_msg],
@@ -466,13 +477,12 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
         return None
 
     def _inject_npm_auth(self, clone_path: Path):
-        """Inject internal scope registry config and auth token into .npmrc."""
+        """Write GitHub Packages registry config into .npmrc (no secrets on disk)."""
         npmrc = clone_path / ".npmrc"
         managed_lines = [
             "@deepiri:registry=https://npm.pkg.github.com",
             f"@{self.org}:registry=https://npm.pkg.github.com",
-            "//npm.pkg.github.com/:_authToken="
-            f"{self.token}",
+            "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}",
         ]
 
         content = npmrc.read_text() if npmrc.exists() else ""
@@ -492,6 +502,7 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
     def _regenerate_npm_lock(self, clone_path: Path):
         """Regenerate package-lock.json."""
         self._inject_npm_auth(clone_path)
+        npm_env = {**os.environ, "NODE_AUTH_TOKEN": self.token}
         try:
             result = subprocess.run(
                 [
@@ -505,6 +516,7 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
                 capture_output=True,
                 text=True,
                 timeout=120,
+                env=npm_env,
             )
             if result.returncode == 0:
                 console.print(f"    [green]Regenerated package-lock.json[/green]")
