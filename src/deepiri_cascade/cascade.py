@@ -1,5 +1,6 @@
 """Wave-based cascade processor."""
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -248,6 +249,13 @@ class CascadeProcessor:
                 for name, version in data[key].items():
                     if npm.is_local_spec(version):
                         continue
+                    git_repo = npm.extract_github_repo(version, self.org)
+                    if git_repo and (
+                        git_repo == source_repo
+                        or f"deepiri-{git_repo}" == source_repo
+                        or git_repo == source_repo.removeprefix("deepiri-")
+                    ):
+                        return name
                     if not name.startswith(prefix):
                         continue
                     base = name[len(prefix):]
@@ -319,6 +327,16 @@ class CascadeProcessor:
                 text=True,
             )
             if not result.stdout.strip():
+                return None
+
+            leak_check = subprocess.run(
+                ["git", "diff", "--cached"],
+                cwd=clone_path,
+                capture_output=True,
+                text=True,
+            )
+            if re.search(r"gh[spru]_[A-Za-z0-9_]+", leak_check.stdout):
+                console.print("    [red]Refusing to commit: staged diff contains a GitHub token[/red]")
                 return None
 
             commit_msg = f"deps: update {self._source_repo} → {self._source_tag}"
@@ -396,6 +414,13 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
                     self._enable_auto_merge(pr_node_id)
                 
                 return pr_url
+            if response.status_code == 422 and "pull request already exists" in response.text.lower():
+                existing_pr = self._find_existing_pull_request(repo_name, branch_name)
+                if existing_pr:
+                    console.print(f"    [yellow]PR already exists: {existing_pr}[/yellow]")
+                    return existing_pr
+                console.print(f"    [yellow]PR already exists but could not resolve URL[/yellow]")
+                return None
             else:
                 console.print(f"    [red]PR creation failed: {response.status_code} {response.text}[/red]")
                 return None
@@ -403,6 +428,23 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
         except Exception as e:
             console.print(f"    [red]PR creation error: {e}[/red]")
             return None
+
+    def _find_existing_pull_request(self, repo_name: str, branch_name: str) -> Optional[str]:
+        """Find an open PR for a previously pushed cascade branch."""
+        url = f"https://api.github.com/repos/{self.org}/{repo_name}/pulls"
+        params = {
+            "state": "open",
+            "head": f"{self.org}:{branch_name}",
+        }
+        try:
+            response = httpx.get(url, params=params, headers=self.headers, timeout=30)
+            if response.status_code == 200:
+                prs = response.json()
+                if prs:
+                    return prs[0].get("html_url")
+        except Exception:
+            pass
+        return None
 
     def _enable_auto_merge(self, pull_request_id: str) -> bool:
         """Enable auto-merge on a pull request."""
@@ -466,13 +508,12 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
         return None
 
     def _inject_npm_auth(self, clone_path: Path):
-        """Inject internal scope registry config and auth token into .npmrc."""
+        """Write GitHub Packages registry config into .npmrc (no secrets on disk)."""
         npmrc = clone_path / ".npmrc"
         managed_lines = [
             "@deepiri:registry=https://npm.pkg.github.com",
             f"@{self.org}:registry=https://npm.pkg.github.com",
-            "//npm.pkg.github.com/:_authToken="
-            f"{self.token}",
+            "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}",
         ]
 
         content = npmrc.read_text() if npmrc.exists() else ""
@@ -492,6 +533,7 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
     def _regenerate_npm_lock(self, clone_path: Path):
         """Regenerate package-lock.json."""
         self._inject_npm_auth(clone_path)
+        npm_env = {**os.environ, "NODE_AUTH_TOKEN": self.token}
         try:
             result = subprocess.run(
                 [
@@ -505,6 +547,7 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
                 capture_output=True,
                 text=True,
                 timeout=120,
+                env=npm_env,
             )
             if result.returncode == 0:
                 console.print(f"    [green]Regenerated package-lock.json[/green]")

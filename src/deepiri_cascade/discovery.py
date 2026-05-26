@@ -275,6 +275,14 @@ class Discovery:
         if dep_value in repo_name_set:
             return dep_value
 
+        git_repo = npm.extract_github_repo(dep_value, self.org)
+        if git_repo:
+            if git_repo in repo_name_set:
+                return git_repo
+            prefixed_git_repo = f"deepiri-{git_repo}"
+            if prefixed_git_repo in repo_name_set:
+                return prefixed_git_repo
+
         for prefix in (f"@{self.org}/", "@deepiri/"):
             if dep_name.startswith(prefix):
                 base_name = dep_name[len(prefix):]
