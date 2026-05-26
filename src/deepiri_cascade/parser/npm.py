@@ -1,5 +1,6 @@
 """Parser for npm package.json files."""
 import json
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -9,6 +10,43 @@ LOCAL_SPEC_PREFIXES = ("file:", "workspace:")
 def is_local_spec(version: str) -> bool:
     """Return True for local dependency specs that cascade must not rewrite."""
     return isinstance(version, str) and version.startswith(LOCAL_SPEC_PREFIXES)
+
+
+def is_git_spec(version: str) -> bool:
+    """Return True for npm specs that pin a dependency through git/GitHub."""
+    return (
+        isinstance(version, str)
+        and (
+            version.startswith("github:")
+            or version.startswith("git+")
+            or "github.com/" in version
+            or "github.com:" in version
+        )
+    )
+
+
+def extract_github_repo(version: str, org: str = "team-deepiri") -> Optional[str]:
+    """Extract a GitHub repo name from a git-backed npm dependency spec."""
+    if not is_git_spec(version):
+        return None
+
+    patterns = [
+        rf"github:{re.escape(org)}/([^#\s]+)",
+        rf"github\.com[:/]{re.escape(org)}/([^#\s]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, version, re.IGNORECASE)
+        if match:
+            return match.group(1).removesuffix(".git")
+
+    return None
+
+
+def update_git_spec(version: str, new_ref: str) -> str:
+    """Update or append the git ref fragment in an npm git dependency spec."""
+    if "#" in version:
+        return re.sub(r"#.*$", f"#{new_ref}", version)
+    return f"{version}#{new_ref}"
 
 
 def parse_package_json(path: Path, org: str = "team-deepiri") -> dict:
@@ -28,7 +66,10 @@ def parse_package_json(path: Path, org: str = "team-deepiri") -> dict:
     for key in ["dependencies", "devDependencies"]:
         if key in data:
             for name, version in data[key].items():
-                if name.startswith(org_scope) or name.startswith("@deepiri/"):
+                git_repo = extract_github_repo(version, org)
+                if git_repo:
+                    deps[name] = git_repo
+                elif name.startswith(org_scope) or name.startswith("@deepiri/"):
                     deps[name] = normalize_version(version)
 
     return deps
@@ -93,8 +134,11 @@ def update_package_json(path: Path, package_name: str, new_version: str) -> bool
             old_version = data[key][package_name]
             if is_local_spec(old_version):
                 continue
-            clean = new_version.lstrip("v") if not new_version.startswith("file:") else new_version
-            new_spec = f"^{clean}" if not new_version.startswith("file:") else clean
+            if is_git_spec(old_version):
+                new_spec = update_git_spec(old_version, new_version)
+            else:
+                clean = new_version.lstrip("v") if not new_version.startswith("file:") else new_version
+                new_spec = f"^{clean}" if not new_version.startswith("file:") else clean
             if old_version == new_spec:
                 continue
             data[key][package_name] = new_spec
