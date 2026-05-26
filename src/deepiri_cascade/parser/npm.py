@@ -3,6 +3,7 @@ import json
 import re
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 LOCAL_SPEC_PREFIXES = ("file:", "workspace:")
 
@@ -14,15 +15,16 @@ def is_local_spec(version: str) -> bool:
 
 def is_git_spec(version: str) -> bool:
     """Return True for npm specs that pin a dependency through git/GitHub."""
-    return (
-        isinstance(version, str)
-        and (
-            version.startswith("github:")
-            or version.startswith("git+")
-            or "github.com/" in version
-            or "github.com:" in version
-        )
-    )
+    if not isinstance(version, str):
+        return False
+    if version.startswith("github:"):
+        return True
+    if re.match(r"^git@github\.com:", version, re.IGNORECASE):
+        return True
+    candidate = version.removeprefix("git+")
+    parsed = urlparse(candidate)
+    host = parsed.hostname.lower() if parsed.hostname else ""
+    return host == "github.com"
 
 
 def extract_github_repo(version: str, org: str = "team-deepiri") -> Optional[str]:
@@ -30,14 +32,30 @@ def extract_github_repo(version: str, org: str = "team-deepiri") -> Optional[str
     if not is_git_spec(version):
         return None
 
-    patterns = [
-        rf"github:{re.escape(org)}/([^#\s]+)",
-        rf"github\.com[:/]{re.escape(org)}/([^#\s]+)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, version, re.IGNORECASE)
-        if match:
-            return match.group(1).removesuffix(".git")
+    github_match = re.match(
+        rf"^github:{re.escape(org)}/([^#\s]+)",
+        version,
+        re.IGNORECASE,
+    )
+    if github_match:
+        return github_match.group(1).removesuffix(".git")
+
+    ssh_match = re.match(
+        rf"^git@github\.com:{re.escape(org)}/([^#\s]+)",
+        version,
+        re.IGNORECASE,
+    )
+    if ssh_match:
+        return ssh_match.group(1).removesuffix(".git")
+
+    candidate = version.removeprefix("git+")
+    parsed = urlparse(candidate)
+    if (parsed.hostname or "").lower() != "github.com":
+        return None
+
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 2 and parts[0].lower() == org.lower():
+        return parts[1].removesuffix(".git")
 
     return None
 
