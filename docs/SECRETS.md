@@ -1,5 +1,7 @@
 # Cascade secrets setup
 
+> **Action required:** @Team-Deepiri/it-management-team — please configure the secrets and App settings below so cascade can open dependency PRs across the org.
+
 Checklist for wiring up **deepiri-cascade** end to end: GitHub Actions, the Cloudflare Worker webhook, and the GitHub App.
 
 Repo: **Team-Deepiri/deepiri-cascade**  
@@ -108,6 +110,8 @@ Cascade writes `.npmrc` with `//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN
 
 ## Setup checklist
 
+@Team-Deepiri/it-management-team
+
 - [ ] GitHub App created with permissions and events above
 - [ ] App installed on **Team-Deepiri**
 - [ ] Actions secrets: `APP_ID`, `APP_PRIVATE_KEY`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`
@@ -124,5 +128,7 @@ Cascade writes `.npmrc` with `//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN
 ---
 
 ## Rotating credentials
+
+@Team-Deepiri/it-management-team — use this when rotating App keys or responding to a leaked token.
 
 To rotate the App private key, update **both** Actions secrets (`APP_PRIVATE_KEY`) and Worker secrets (`GITHUB_APP_PRIVATE_KEY`), then revoke the old key in the App settings. Full steps: [IT_SECRETS_RUNBOOK.md](./IT_SECRETS_RUNBOOK.md#2-rotate-the-deepiri-cascade-github-app-credentials).
