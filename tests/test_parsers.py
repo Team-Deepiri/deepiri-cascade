@@ -215,6 +215,67 @@ tag-dep = {git = "https://github.com/team-deepiri/tag-dep.git", tag = "v1.0.0"}
             assert poetry.get_dependency_ref_key(Path(f.name), "rev-dep") == "rev"
             assert poetry.get_dependency_ref_key(Path(f.name), "tag-dep") == "tag"
 
+    def test_update_pyproject_toml_tag_pin_only(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+            f.write("""
+[tool.poetry.dependencies]
+python = "^3.11"
+deepiri-gpu-utils = {git = "https://github.com/team-deepiri/deepiri-gpu-utils.git", tag = "v0.1.0"}
+""")
+            f.flush()
+
+            result = poetry.update_pyproject_toml(
+                Path(f.name),
+                "deepiri-gpu-utils",
+                "v0.1.1",
+                version_key="tag",
+            )
+            assert result is True
+            assert 'tag = "v0.1.1"' in Path(f.name).read_text()
+            assert "rev =" not in Path(f.name).read_text()
+
+    def test_resolve_poetry_pin_rev_on_tag_release(self):
+        sha = "a" * 40
+        assert poetry.resolve_poetry_pin(
+            "rev",
+            "tag",
+            "v0.1.1",
+            dep_repo="deepiri-gpu-utils",
+            source_repo="deepiri-gpu-utils",
+            source_sha=sha,
+        ) == sha
+
+    def test_resolve_poetry_pin_tag_on_tag_release(self):
+        assert poetry.resolve_poetry_pin(
+            "tag",
+            "tag",
+            "v0.1.1",
+            dep_repo="deepiri-gpu-utils",
+            source_repo="deepiri-gpu-utils",
+            source_sha="a" * 40,
+        ) == "v0.1.1"
+
+    def test_resolve_poetry_pin_rev_on_push(self):
+        sha = "b" * 40
+        assert poetry.resolve_poetry_pin(
+            "rev",
+            "push",
+            sha,
+            dep_repo="deepiri-auth-service",
+            source_repo="deepiri-auth-service",
+            source_sha=sha,
+        ) == sha
+
+    def test_resolve_poetry_pin_skips_tag_on_push(self):
+        assert poetry.resolve_poetry_pin(
+            "tag",
+            "push",
+            "c" * 40,
+            dep_repo="deepiri-gpu-utils",
+            source_repo="deepiri-gpu-utils",
+            source_sha="c" * 40,
+        ) is None
+
 
 class TestGitmodulesParser:
     def test_parse_gitmodules(self):

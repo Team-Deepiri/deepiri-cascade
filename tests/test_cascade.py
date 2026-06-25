@@ -129,6 +129,7 @@ class TestCascadeRunResults:
         proc.dry_run = False
         proc._source_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         proc._source_repo = "deepiri-gpu-utils"
+        proc._trigger = "tag"
         proc._active_target_refs = {"deepiri-gpu-utils": "v1.0.0"}
         proc._get_or_clone_repo = lambda repo_name: tmp_path
         proc._regenerate_poetry_lock = lambda clone_path: None
@@ -151,6 +152,65 @@ deepiri-gpu-utils = {git = "https://github.com/Team-Deepiri/deepiri-gpu-utils.gi
         content = pyproject.read_text()
         assert 'rev = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' in content
         assert 'version = "0.1.1"' in content
+
+    def test_update_repo_updates_tag_pinned_poetry_dependency(self, tmp_path):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc.bump_type = "patch"
+        proc.dry_run = False
+        proc._trigger = "tag"
+        proc._source_sha = "cccccccccccccccccccccccccccccccccccccccc"
+        proc._source_repo = "deepiri-gpu-utils"
+        proc._active_target_refs = {"deepiri-gpu-utils": "v0.1.1"}
+        proc._get_or_clone_repo = lambda repo_name: tmp_path
+        proc._regenerate_poetry_lock = lambda clone_path: None
+        proc._create_pull_request = lambda repo_name, clone_path: "https://example.test/pr"
+
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("""
+[tool.poetry]
+name = "consumer"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+deepiri-gpu-utils = {git = "https://github.com/Team-Deepiri/deepiri-gpu-utils.git", tag = "v0.1.0"}
+""")
+
+        result = proc._update_repo("consumer", "deepiri-gpu-utils", "v0.1.1")
+
+        assert result == "updated"
+        content = pyproject.read_text()
+        assert 'tag = "v0.1.1"' in content
+        assert "rev =" not in content
+
+    def test_update_repo_skips_tag_pinned_poetry_on_push(self, tmp_path):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc.bump_type = "patch"
+        proc.dry_run = False
+        proc._trigger = "push"
+        proc._source_sha = "dddddddddddddddddddddddddddddddddddddddd"
+        proc._source_repo = "deepiri-gpu-utils"
+        proc._active_target_refs = {"deepiri-gpu-utils": proc._source_sha}
+        proc._get_or_clone_repo = lambda repo_name: tmp_path
+        proc._create_pull_request = lambda repo_name, clone_path: None
+
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("""
+[tool.poetry]
+name = "consumer"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+deepiri-gpu-utils = {git = "https://github.com/Team-Deepiri/deepiri-gpu-utils.git", tag = "v0.1.0"}
+""")
+
+        result = proc._update_repo("consumer", "deepiri-gpu-utils", proc._source_sha)
+
+        assert result == "skipped"
+        assert 'tag = "v0.1.0"' in pyproject.read_text()
 
     def test_update_repo_fails_when_matching_submodule_update_fails(self, tmp_path, monkeypatch):
         proc = CascadeProcessor.__new__(CascadeProcessor)

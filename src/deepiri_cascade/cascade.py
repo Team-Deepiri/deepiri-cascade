@@ -198,8 +198,25 @@ class CascadeProcessor:
                     for dep_name, dep_repo in deps.items():
                         if dep_repo in target_refs:
                             matched_dependency = True
-                            update_ref = self._resolve_update_ref(dep_repo, target_refs[dep_repo])
-                            if poetry.update_pyproject_toml(manifest.path, dep_name, update_ref):
+                            ref_key = poetry.get_dependency_ref_key(manifest.path, dep_name)
+                            target_ref = target_refs[dep_repo]
+                            update_ref = poetry.resolve_poetry_pin(
+                                ref_key,
+                                self._trigger,
+                                target_ref,
+                                dep_repo=dep_repo,
+                                source_repo=self._source_repo,
+                                source_sha=self._source_sha,
+                                resolve_tag_sha=self._get_tag_sha,
+                            )
+                            if update_ref is None:
+                                continue
+                            if poetry.update_pyproject_toml(
+                                manifest.path,
+                                dep_name,
+                                update_ref,
+                                version_key=ref_key,
+                            ):
                                 console.print(f"    [green]Updated {manifest.path.relative_to(clone_path)}[/green]")
                                 bumped = poetry.bump_pyproject_version(manifest.path, self.bump_type)
                                 self._remember_bumped_version(bumped)
