@@ -1,7 +1,6 @@
 /**
- * deepiri-cascade Cloudflare Worker — thin relay: verify tag webhook, then
- * repository_dispatch to deepiri-cascade. Dependency discovery runs only in
- * GitHub Actions (same code as local CLI), not on the edge.
+ * deepiri-cascade Cloudflare Worker — relay GitHub webhooks to cascade workflow.
+ * Supports semver tag releases and default-branch pushes (submodule consumers).
  */
 
 const GITHUB_API = "https://api.github.com";
@@ -29,8 +28,6 @@ export default {
         const { ref_type, ref, repository } = payload;
         const repo = repository?.name || "";
 
-        console.log("Create event - ref_type:", ref_type, "ref:", ref, "repo:", repo);
-
         if (ref_type !== "tag") {
           return new Response(JSON.stringify({ skipped: "not a tag" }), { status: 200 });
         }
@@ -39,16 +36,31 @@ export default {
           return new Response(JSON.stringify({ skipped: "not a version tag (need vX.Y.Z)" }), { status: 200 });
         }
 
-        console.log(`>>> Triggering cascade dispatch for ${repo} ${ref}`);
-        try {
-          await triggerCascade(env, repo, ref);
-          console.log(">>> Cascade dispatch OK (see GitHub Actions on deepiri-cascade for dependents + PRs)");
-        } catch (err) {
-          console.error(">>> Cascade dispatch FAILED:", err.message);
-          return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+        console.log(`>>> Triggering tag cascade for ${repo} ${ref}`);
+        await triggerCascade(env, { repo, tag: ref, trigger: "tag" });
+        return new Response(JSON.stringify({ success: true, repo, tag: ref, trigger: "tag" }), { status: 200 });
+      }
+
+      if (eventType === "push") {
+        const { ref, repository, after, deleted } = payload;
+        const repo = repository?.name || "";
+        const defaultBranch = repository?.default_branch || "main";
+
+        if (deleted) {
+          return new Response(JSON.stringify({ skipped: "branch deleted" }), { status: 200 });
         }
 
-        return new Response(JSON.stringify({ success: true, repo, tag: ref }), { status: 200 });
+        if (ref !== `refs/heads/${defaultBranch}`) {
+          return new Response(JSON.stringify({ skipped: "not default branch push" }), { status: 200 });
+        }
+
+        if (!after || after.match(/^0+$/)) {
+          return new Response(JSON.stringify({ skipped: "empty after sha" }), { status: 200 });
+        }
+
+        console.log(`>>> Triggering push cascade for ${repo}@${after.slice(0, 8)}`);
+        await triggerCascade(env, { repo, sha: after, trigger: "push" });
+        return new Response(JSON.stringify({ success: true, repo, sha: after, trigger: "push" }), { status: 200 });
       }
 
       return new Response(JSON.stringify({ received: true, event: eventType }), { status: 200 });
@@ -59,7 +71,7 @@ export default {
   }
 };
 
-async function triggerCascade(env, repo, tag) {
+async function triggerCascade(env, clientPayload) {
   const jwt = await createJWT(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
   const installToken = await getInstallationToken(jwt);
 
@@ -72,7 +84,7 @@ async function triggerCascade(env, repo, tag) {
     },
     body: JSON.stringify({
       event_type: EVENT_TYPE,
-      client_payload: { repo, tag, action: "cascade" }
+      client_payload: { ...clientPayload, action: "cascade" }
     })
   });
 

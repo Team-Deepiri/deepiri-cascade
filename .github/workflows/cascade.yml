@@ -9,8 +9,15 @@ on:
         description: 'Repository name'
         required: true
       tag:
-        description: 'Version tag'
-        required: true
+        description: 'Version tag (tag trigger)'
+        required: false
+      sha:
+        description: 'Commit SHA (push trigger)'
+        required: false
+      trigger:
+        description: 'Trigger type: tag or push'
+        required: false
+        default: tag
 
 env:
   ORG: team-deepiri
@@ -42,7 +49,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e .
-          pip install rich httpx gitpython tomli networkx
+          pip install rich httpx gitpython tomli networkx poetry
 
       - name: Get cascade info
         id: info
@@ -50,20 +57,30 @@ jobs:
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             REPO="${{ github.event.client_payload.repo }}"
             TAG="${{ github.event.client_payload.tag }}"
+            SHA="${{ github.event.client_payload.sha }}"
+            TRIGGER="${{ github.event.client_payload.trigger }}"
           else
             REPO="${{ github.event.inputs.repo }}"
             TAG="${{ github.event.inputs.tag }}"
+            SHA="${{ github.event.inputs.sha }}"
+            TRIGGER="${{ github.event.inputs.trigger }}"
+          fi
+          if [ -z "$TRIGGER" ]; then
+            if [ -n "$SHA" ]; then TRIGGER="push"; else TRIGGER="tag"; fi
           fi
           echo "repo=$REPO" >> $GITHUB_OUTPUT
           echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "trigger=$TRIGGER" >> $GITHUB_OUTPUT
 
       - name: Run cascade
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          deepiri-cascade cascade \
-            --repo "${{ steps.info.outputs.repo }}" \
-            --tag "${{ steps.info.outputs.tag }}" \
-            --org ${{ env.ORG }} \
-            --bump-type patch \
-            --no-confirm
+          ARGS=(--repo "${{ steps.info.outputs.repo }}" --org ${{ env.ORG }} --bump-type patch --no-confirm)
+          if [ "${{ steps.info.outputs.trigger }}" = "push" ]; then
+            ARGS+=(--trigger push --sha "${{ steps.info.outputs.sha }}")
+          else
+            ARGS+=(--trigger tag --tag "${{ steps.info.outputs.tag }}")
+          fi
+          deepiri-cascade cascade "${ARGS[@]}"

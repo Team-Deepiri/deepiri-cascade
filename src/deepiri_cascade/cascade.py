@@ -13,6 +13,7 @@ from rich.table import Table
 from .ci_logging import compute_dependency_waves
 from .manifest import iter_package_manifests
 from .parser import npm, poetry, gitmodules
+from .triggers import TriggerType, branch_name_suffix, display_ref, is_commit_sha
 
 console = Console()
 
@@ -36,10 +37,12 @@ class CascadeProcessor:
         self._repo_cache: Dict[str, Path] = {}
         self._source_sha: Optional[str] = None
         self._source_repo: Optional[str] = None
-        self._source_tag: Optional[str] = None
+        self._source_ref: Optional[str] = None
+        self._trigger: TriggerType = "tag"
         self._cascade_refs: Dict[str, str] = {}
         self._active_target_refs: Dict[str, str] = {}
         self._last_bumped_version: Optional[str] = None
+        self._last_primary_upstream: Optional[str] = None
 
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.headers = {
@@ -52,20 +55,43 @@ class CascadeProcessor:
         self,
         dependency_graph: Dict[str, List[str]],
         source_repo: str,
-        source_tag: str,
+        source_ref: str,
+        source_sha: Optional[str] = None,
+        trigger: TriggerType = "tag",
         confirm: bool = True,
+        source_tag: Optional[str] = None,
     ) -> Dict:
         """Run the cascade update process."""
+        # Backwards compatibility for tests/callers still passing source_tag=.
+        if source_tag is not None and not source_ref:
+            source_ref = source_tag
+
         self._source_repo = source_repo
-        self._source_tag = source_tag
-        self._source_sha = self._get_tag_sha(source_repo, source_tag)
-        self._cascade_refs = {source_repo: source_tag}
-        
-        if self._source_sha:
-            if self.verbose:
-                console.print(f"[dim]Source tag {source_tag} points to {self._source_sha[:8] if self._source_sha else 'unknown'}[/dim]")
+        self._source_ref = source_ref
+        self._trigger = trigger
+
+        if trigger == "push":
+            self._source_sha = source_sha or (source_ref if is_commit_sha(source_ref) else None)
+            if not self._source_sha:
+                self._source_sha = self._get_default_branch_sha(source_repo)
+            self._cascade_refs = {source_repo: self._source_sha or source_ref}
+            if self.verbose and self._source_sha:
+                console.print(
+                    f"[dim]Push trigger: {source_repo}@{self._source_sha[:8]}[/dim]"
+                )
         else:
-            console.print(f"[yellow]Warning: Could not resolve tag {source_tag}, will use tag name for submodule update[/yellow]")
+            self._source_sha = source_sha or self._get_tag_sha(source_repo, source_ref)
+            self._cascade_refs = {source_repo: source_ref}
+            if self._source_sha:
+                if self.verbose:
+                    console.print(
+                        f"[dim]Source tag {source_ref} points to {self._source_sha[:8]}[/dim]"
+                    )
+            else:
+                console.print(
+                    f"[yellow]Warning: Could not resolve tag {source_ref}, "
+                    f"will attempt ref resolution during updates[/yellow]"
+                )
 
         dependents = dependency_graph.get(source_repo, [])
 
@@ -99,14 +125,15 @@ class CascadeProcessor:
             for repo in wave:
                 target_refs = self._target_refs_for_repo(dependency_graph, repo)
                 primary_repo = next(iter(target_refs), source_repo)
-                primary_ref = target_refs.get(primary_repo, source_tag)
-                self._active_target_refs = target_refs or {source_repo: source_tag}
+                primary_ref = target_refs.get(primary_repo, source_ref)
+                self._active_target_refs = target_refs or {source_repo: source_ref}
+                self._last_primary_upstream = primary_repo
                 status = self._update_repo(repo, primary_repo, primary_ref)
                 if status == "updated":
                     results["updated"].append(repo)
-                    bumped_version = getattr(self, "_last_bumped_version", None)
-                    if bumped_version:
-                        self._cascade_refs[repo] = f"v{bumped_version}"
+                    propagated = self._propagated_ref_for_repo(repo)
+                    if propagated:
+                        self._cascade_refs[repo] = propagated
                 elif status == "skipped":
                     results["skipped"].append(repo)
                 else:
@@ -158,7 +185,8 @@ class CascadeProcessor:
                         pkg_name = self._find_npm_dep_name(manifest.path, target_repo)
                         if pkg_name:
                             matched_dependency = True
-                            if npm.update_package_json(manifest.path, pkg_name, target_ref):
+                            update_ref = self._resolve_update_ref(target_repo, target_refs[target_repo])
+                            if npm.update_package_json(manifest.path, pkg_name, update_ref):
                                 console.print(f"    [green]Updated {manifest.path.relative_to(clone_path)} ({pkg_name})[/green]")
                                 bumped = npm.bump_package_version(manifest.path, self.bump_type)
                                 self._remember_bumped_version(bumped)
@@ -170,10 +198,7 @@ class CascadeProcessor:
                     for dep_name, dep_repo in deps.items():
                         if dep_repo in target_refs:
                             matched_dependency = True
-                            ref_key = poetry.get_dependency_ref_key(manifest.path, dep_name)
-                            target_ref = target_refs[dep_repo]
-                            source_repo_for_run = getattr(self, "_source_repo", source_repo)
-                            update_ref = self._source_sha if dep_repo == source_repo_for_run and ref_key == "rev" and self._source_sha else target_ref
+                            update_ref = self._resolve_update_ref(dep_repo, target_refs[dep_repo])
                             if poetry.update_pyproject_toml(manifest.path, dep_name, update_ref):
                                 console.print(f"    [green]Updated {manifest.path.relative_to(clone_path)}[/green]")
                                 bumped = poetry.bump_pyproject_version(manifest.path, self.bump_type)
@@ -187,8 +212,7 @@ class CascadeProcessor:
                         if dep_repo in target_refs:
                             matched_dependency = True
                             target_ref = target_refs[dep_repo]
-                            source_repo_for_run = getattr(self, "_source_repo", source_repo)
-                            update_ref = self._source_sha if dep_repo == source_repo_for_run and self._source_sha else target_ref
+                            update_ref = self._resolve_update_ref(dep_repo, target_ref)
                             result = gitmodules.update_submodule_ref_result(
                                 manifest.project_dir,
                                 submodule_path,
@@ -204,7 +228,7 @@ class CascadeProcessor:
                                 console.print(f"    [red]Submodule update failed at {result.step}: {message}[/red]")
 
             if updated:
-                pr_url = self._create_pull_request(repo_name, clone_path, source_repo, source_tag)
+                pr_url = self._create_pull_request(repo_name, clone_path)
                 if pr_url:
                     console.print(f"    [green]Created PR: {pr_url}[/green]")
                     return "updated"
@@ -298,10 +322,47 @@ class CascadeProcessor:
         except Exception:
             return None
 
+    def _resolve_update_ref(self, dep_repo: str, ref: str) -> str:
+        """Resolve tags, SHAs, and mistaken consumer semver tags to a git checkout ref."""
+        if is_commit_sha(ref):
+            return ref
+
+        if dep_repo == getattr(self, "_source_repo", None) and self._source_sha:
+            return self._source_sha
+
+        if ref.startswith("v") and re.match(r"^v\d+\.\d+\.\d+", ref):
+            tag_sha = self._get_tag_sha(dep_repo, ref)
+            if tag_sha:
+                return tag_sha
+            default_sha = self._get_default_branch_sha(dep_repo)
+            if default_sha:
+                return default_sha
+
+        return ref
+
+    def _propagated_ref_for_repo(self, repo_name: str) -> Optional[str]:
+        """Ref downstream repos should use when depending on a just-updated consumer."""
+        primary = getattr(self, "_last_primary_upstream", None)
+        if not primary or primary not in self._active_target_refs:
+            return None
+        return self._resolve_update_ref(primary, self._active_target_refs[primary])
+
+    def _get_default_branch_sha(self, repo_name: str) -> Optional[str]:
+        branch = self._get_default_branch(repo_name)
+        url = f"https://api.github.com/repos/{self.org}/{repo_name}/commits/{branch}"
+        try:
+            response = httpx.get(url, headers=self.headers, timeout=10)
+            if response.status_code == 200:
+                return response.json().get("sha")
+        except Exception:
+            pass
+        return None
+
     def _commit_and_push(self, repo_name: str, clone_path: Path):
         """Commit and push changes to a new branch."""
         try:
-            branch_name = f"deepiri-cascade/{repo_name}/deps/{self._source_sha[:8]}" if self._source_sha else f"deepiri-cascade/{repo_name}/deps/{self._source_tag}"
+            suffix = branch_name_suffix(self._source_sha or self._source_ref or "unknown")
+            branch_name = f"deepiri-cascade/{repo_name}/deps/{suffix}"
             
             checkout = subprocess.run(
                 ["git", "checkout", "-B", branch_name],
@@ -339,7 +400,8 @@ class CascadeProcessor:
                 console.print("    [red]Refusing to commit: staged diff contains a GitHub token[/red]")
                 return None
 
-            commit_msg = f"deps: update {self._source_repo} → {self._source_tag}"
+            display = display_ref(self._trigger, self._source_ref or "")
+            commit_msg = f"deps: update {self._source_repo} → {display}"
             commit = subprocess.run(
                 ["git", "commit", "-m", commit_msg],
                 cwd=clone_path,
@@ -371,8 +433,6 @@ class CascadeProcessor:
         self,
         repo_name: str,
         clone_path: Path,
-        source_repo: str,
-        source_tag: str,
     ) -> Optional[str]:
         """Create a pull request with auto-merge enabled."""
         branch_name = self._commit_and_push(repo_name, clone_path)
@@ -380,11 +440,13 @@ class CascadeProcessor:
             return None
 
         default_branch = self._get_default_branch(repo_name)
-        
-        pr_title = f"deps: update {source_repo} → {source_tag}"
-        pr_body = f"""Automated cascade update triggered by {source_repo} {source_tag} release.
+        display = display_ref(self._trigger, self._source_ref or "")
+        trigger_label = "default-branch push" if self._trigger == "push" else "release tag"
 
-This PR updates the dependency on `{source_repo}` to version `{source_tag}`.
+        pr_title = f"deps: update {self._source_repo} → {display}"
+        pr_body = f"""Automated cascade update triggered by {self._source_repo} {trigger_label} (`{display}`).
+
+This PR updates the dependency on `{self._source_repo}` to `{display}`.
 
 - Updated npm/pyproject dependencies
 - Updated submodule refs
