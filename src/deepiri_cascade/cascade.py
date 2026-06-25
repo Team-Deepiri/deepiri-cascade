@@ -635,11 +635,19 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
         except Exception as e:
             console.print(f"    [yellow]npm install error: {e}[/yellow]")
 
+    def _poetry_command(self) -> list[str]:
+        import shutil
+        import sys
+
+        if shutil.which("poetry"):
+            return ["poetry"]
+        return [sys.executable, "-m", "poetry"]
+
     def _regenerate_poetry_lock(self, clone_path: Path):
         """Regenerate poetry.lock."""
         try:
             result = subprocess.run(
-                ["poetry", "lock", "--no-update"],
+                [*self._poetry_command(), "lock", "--no-update"],
                 cwd=clone_path,
                 capture_output=True,
                 text=True,

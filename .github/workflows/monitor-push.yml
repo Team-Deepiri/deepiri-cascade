@@ -10,7 +10,7 @@ env:
   CASCADE_REPO: deepiri-cascade
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   check-pushes:

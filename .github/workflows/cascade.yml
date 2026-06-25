@@ -48,8 +48,14 @@ jobs:
 
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install -e .
           pip install rich httpx gitpython tomli networkx poetry
+
+      - name: Verify toolchain
+        run: |
+          poetry --version
+          deepiri-cascade --help >/dev/null
 
       - name: Get cascade info
         id: info
