@@ -125,6 +125,8 @@ The cascade runs automatically!
 
 ### 5. GitHub Actions secrets (`Team-Deepiri/deepiri-cascade`)
 
+See **[docs/SECRETS.md](docs/SECRETS.md)** for the full setup checklist.
+
 | Secret | Used by | Purpose |
 |--------|---------|---------|
 | `APP_ID` | `cascade.yml` | GitHub App ID for PR creation |
