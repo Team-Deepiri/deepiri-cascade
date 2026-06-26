@@ -19,7 +19,14 @@ def main(ctx, verbose):
 
 @main.command()
 @click.option("--repo", help="Repository name (auto-detected from tag event)")
-@click.option("--tag", help="Version tag to cascade (auto-detected)")
+@click.option("--tag", help="Version tag to cascade (tag trigger)")
+@click.option("--sha", help="Commit SHA to cascade (push-to-main trigger)")
+@click.option(
+    "--trigger",
+    type=click.Choice(["tag", "push"]),
+    default="tag",
+    help="Cascade trigger: semver tag release or default-branch push",
+)
 @click.option("--org", default="team-deepiri", help="GitHub organization name")
 @click.option("--token", help="GitHub token (defaults to GITHUB_TOKEN env)")
 @click.option("--bump-type", type=click.Choice(["patch", "minor", "major"]), default="patch")
@@ -28,12 +35,13 @@ def main(ctx, verbose):
 @click.option("--work-dir", default="/tmp/deepiri-cascade", help="Working directory for git operations")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
 @click.pass_context
-def cascade(ctx, repo, tag, org, token, bump_type, dry_run, no_confirm, work_dir, verbose):
-    """Run cascade update for a tagged release."""
-    from .auto_detect import detect_repo_and_tag
+def cascade(ctx, repo, tag, sha, trigger, org, token, bump_type, dry_run, no_confirm, work_dir, verbose):
+    """Run cascade update for a tagged release or default-branch push."""
+    from .auto_detect import detect_cascade_inputs
     from .github_auth import get_token
     from .discovery import Discovery
     from .cascade import CascadeProcessor
+    from .triggers import display_ref
 
     verbose = ctx.obj.get("verbose") or verbose
 
@@ -43,15 +51,20 @@ def cascade(ctx, repo, tag, org, token, bump_type, dry_run, no_confirm, work_dir
         console.print("[red]Error: GitHub token required. Set GITHUB_TOKEN env var or use --token[/red]")
         raise click.Abort()
 
-    repo, tag = detect_repo_and_tag(repo, tag, token, org)
+    repo, source_ref, trigger, source_sha = detect_cascade_inputs(
+        repo, tag, sha, trigger, token, org
+    )
 
-    console.print(f"[cyan]Cascading {repo} {tag} to dependent repos...[/cyan]")
+    console.print(
+        f"[cyan]Cascading {repo} {display_ref(trigger, source_ref)} "
+        f"({trigger}) to dependent repos...[/cyan]"
+    )
 
     discovery = Discovery(token, org, verbose=verbose)
-    graph = discovery.build_dependency_graph(repo, tag)
+    graph = discovery.build_dependency_graph(repo, source_ref)
 
     waves = compute_dependency_waves(graph, repo)
-    emit_cascade_plan_for_ci(org, repo, tag, graph, waves)
+    emit_cascade_plan_for_ci(org, repo, source_ref, graph, waves)
 
     processor = CascadeProcessor(
         token=token,
@@ -62,7 +75,14 @@ def cascade(ctx, repo, tag, org, token, bump_type, dry_run, no_confirm, work_dir
         verbose=verbose,
     )
 
-    results = processor.run(graph, source_repo=repo, source_tag=tag, confirm=not no_confirm)
+    results = processor.run(
+        graph,
+        source_repo=repo,
+        source_ref=source_ref,
+        source_sha=source_sha,
+        trigger=trigger,
+        confirm=not no_confirm,
+    )
 
     console.print(f"\n[green]✓ Updated {len(results.get('updated', []))} repos[/green]")
     if results.get("skipped"):

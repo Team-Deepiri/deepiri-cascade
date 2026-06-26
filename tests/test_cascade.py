@@ -124,12 +124,16 @@ class TestCascadeRunResults:
 
     def test_update_repo_uses_source_sha_for_poetry_rev_dependency(self, tmp_path):
         proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
         proc.bump_type = "patch"
         proc.dry_run = False
         proc._source_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        proc._source_repo = "deepiri-gpu-utils"
+        proc._trigger = "tag"
+        proc._active_target_refs = {"deepiri-gpu-utils": "v1.0.0"}
         proc._get_or_clone_repo = lambda repo_name: tmp_path
         proc._regenerate_poetry_lock = lambda clone_path: None
-        proc._create_pull_request = lambda repo_name, clone_path, source_repo, source_tag: "https://example.test/pr"
+        proc._create_pull_request = lambda repo_name, clone_path: "https://example.test/pr"
 
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text("""
@@ -148,6 +152,65 @@ deepiri-gpu-utils = {git = "https://github.com/Team-Deepiri/deepiri-gpu-utils.gi
         content = pyproject.read_text()
         assert 'rev = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' in content
         assert 'version = "0.1.1"' in content
+
+    def test_update_repo_updates_tag_pinned_poetry_dependency(self, tmp_path):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc.bump_type = "patch"
+        proc.dry_run = False
+        proc._trigger = "tag"
+        proc._source_sha = "cccccccccccccccccccccccccccccccccccccccc"
+        proc._source_repo = "deepiri-gpu-utils"
+        proc._active_target_refs = {"deepiri-gpu-utils": "v0.1.1"}
+        proc._get_or_clone_repo = lambda repo_name: tmp_path
+        proc._regenerate_poetry_lock = lambda clone_path: None
+        proc._create_pull_request = lambda repo_name, clone_path: "https://example.test/pr"
+
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("""
+[tool.poetry]
+name = "consumer"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+deepiri-gpu-utils = {git = "https://github.com/Team-Deepiri/deepiri-gpu-utils.git", tag = "v0.1.0"}
+""")
+
+        result = proc._update_repo("consumer", "deepiri-gpu-utils", "v0.1.1")
+
+        assert result == "updated"
+        content = pyproject.read_text()
+        assert 'tag = "v0.1.1"' in content
+        assert "rev =" not in content
+
+    def test_update_repo_skips_tag_pinned_poetry_on_push(self, tmp_path):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc.bump_type = "patch"
+        proc.dry_run = False
+        proc._trigger = "push"
+        proc._source_sha = "dddddddddddddddddddddddddddddddddddddddd"
+        proc._source_repo = "deepiri-gpu-utils"
+        proc._active_target_refs = {"deepiri-gpu-utils": proc._source_sha}
+        proc._get_or_clone_repo = lambda repo_name: tmp_path
+        proc._create_pull_request = lambda repo_name, clone_path: None
+
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("""
+[tool.poetry]
+name = "consumer"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+deepiri-gpu-utils = {git = "https://github.com/Team-Deepiri/deepiri-gpu-utils.git", tag = "v0.1.0"}
+""")
+
+        result = proc._update_repo("consumer", "deepiri-gpu-utils", proc._source_sha)
+
+        assert result == "skipped"
+        assert 'tag = "v0.1.0"' in pyproject.read_text()
 
     def test_update_repo_fails_when_matching_submodule_update_fails(self, tmp_path, monkeypatch):
         proc = CascadeProcessor.__new__(CascadeProcessor)
@@ -186,13 +249,18 @@ deepiri-gpu-utils = {git = "https://github.com/Team-Deepiri/deepiri-gpu-utils.gi
         proc.org = "team-deepiri"
         proc.bump_type = "patch"
         proc.dry_run = False
-        proc._source_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        proc._active_target_refs = {"deepiri-shared-utils": "v1.2.3"}
+        proc._get_default_branch_sha = lambda repo: None
+        proc._get_tag_sha = lambda repo, tag: None
         proc._get_or_clone_repo = lambda repo_name: tmp_path
-
         pkg = tmp_path / "package.json"
         pkg.write_text(json.dumps({
-            "dependencies": {"@team-deepiri/shared-utils": "^1.2.3"},
+            "dependencies": {
+                "@team-deepiri/shared-utils": "github:Team-Deepiri/deepiri-shared-utils#v1.2.3",
+            },
         }))
+        proc._regenerate_npm_lock = lambda clone_path: None
+        proc._create_pull_request = lambda repo_name, clone_path: None
 
         result = proc._update_repo(
             "consumer",
@@ -263,6 +331,26 @@ class TestGitOperations:
             "-c",
             "url.https://x-access-token:secret-token@github.com/.insteadOf=https://github.com/",
         ]
+
+
+class TestResolveUpdateRef:
+    def test_resolve_semver_tag_to_default_branch_when_tag_missing(self, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc._source_repo = "deepiri-gpu-utils"
+        proc._source_sha = "a" * 40
+        proc._get_tag_sha = lambda repo, tag: None
+        proc._get_default_branch_sha = lambda repo: "d" * 40
+
+        resolved = proc._resolve_update_ref("diri-helox", "v0.1.1")
+        assert resolved == "d" * 40
+
+    def test_push_source_uses_source_sha(self):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc._source_repo = "deepiri-auth-service"
+        proc._source_sha = "e" * 40
+
+        resolved = proc._resolve_update_ref("deepiri-auth-service", "ignored")
+        assert resolved == "e" * 40
 
 
 class TestTagShaResolution:

@@ -1,7 +1,9 @@
 """Parser for Poetry pyproject.toml files."""
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Literal, Optional
+
+RefKey = Literal["rev", "tag"]
 
 
 def parse_pyproject_toml(path: Path) -> dict:
@@ -26,45 +28,63 @@ def parse_pyproject_toml(path: Path) -> dict:
         deps[name] = repo
 
     rev_pattern = re.compile(
-        r'([a-z][a-z0-9_-]*)\s*=\s*\{[^}]*rev\s*=\s*["\']v?([0-9.]+)["\'][^}]*\}',
-        re.IGNORECASE | re.DOTALL
+        r'([a-z][a-z0-9_-]*)\s*=\s*\{[^}]*rev\s*=\s*["\']([^"\']+)["\'][^}]*\}',
+        re.IGNORECASE | re.DOTALL,
     )
 
     for match in rev_pattern.finditer(content):
         name = match.group(1)
-        version = match.group(2)
-        # Don't overwrite a repo-name value already set by deepiri_pattern.
+        pin = match.group(2)
         if name not in deps:
-            deps[name] = f"v{version}"
+            deps[name] = pin if pin.startswith("v") and pin[1:2].isdigit() else pin
 
     tag_pattern = re.compile(
-        r'([a-z][a-z0-9_-]*)\s*=\s*\{[^}]*tag\s*=\s*["\']v?([0-9.]+)["\'][^}]*\}',
-        re.IGNORECASE | re.DOTALL
+        r'([a-z][a-z0-9_-]*)\s*=\s*\{[^}]*tag\s*=\s*["\']([^"\']+)["\'][^}]*\}',
+        re.IGNORECASE | re.DOTALL,
     )
 
     for match in tag_pattern.finditer(content):
         name = match.group(1)
-        version = match.group(2)
-        # Don't overwrite a repo-name value already set by deepiri_pattern.
+        pin = match.group(2)
         if name not in deps:
-            deps[name] = f"v{version}"
+            deps[name] = pin if pin.startswith("v") else f"v{pin}"
 
     return deps
 
 
-def update_pyproject_toml(path: Path, package_name: str, new_version: str, version_key: str = "rev") -> bool:
-    """Update a dependency version in pyproject.toml."""
+def update_pyproject_toml(
+    path: Path,
+    package_name: str,
+    new_version: str,
+    version_key: Optional[RefKey] = None,
+) -> bool:
+    """Update a Poetry git dependency pin (``rev`` or ``tag``)."""
     try:
         content = path.read_text()
     except FileNotFoundError:
         return False
 
-    patterns = [
-        (re.compile(rf'({re.escape(package_name)}\s*=\s*\{{[^}}]*rev\s*=\s*["\'])([^"\']+)(["\'])', re.IGNORECASE),
-         rf'\g<1>{new_version}\g<3>'),
-        (re.compile(rf'({re.escape(package_name)}\s*=\s*\{{[^}}]*tag\s*=\s*["\'])([^"\']+)(["\'])', re.IGNORECASE),
-         rf'\g<1>{new_version}\g<3>'),
-    ]
+    patterns: list[tuple[re.Pattern[str], str]] = []
+    if version_key in (None, "rev"):
+        patterns.append(
+            (
+                re.compile(
+                    rf'({re.escape(package_name)}\s*=\s*\{{[^}}]*rev\s*=\s*["\'])([^"\']+)(["\'])',
+                    re.IGNORECASE | re.DOTALL,
+                ),
+                r"\g<1>" + new_version + r"\g<3>",
+            )
+        )
+    if version_key in (None, "tag"):
+        patterns.append(
+            (
+                re.compile(
+                    rf'({re.escape(package_name)}\s*=\s*\{{[^}}]*tag\s*=\s*["\'])([^"\']+)(["\'])',
+                    re.IGNORECASE | re.DOTALL,
+                ),
+                r"\g<1>" + new_version + r"\g<3>",
+            )
+        )
 
     modified = False
     new_content = content
@@ -74,7 +94,7 @@ def update_pyproject_toml(path: Path, package_name: str, new_version: str, versi
             current_version = match.group(2)
             if current_version == new_version:
                 continue
-            new_content = pattern.sub(replacement, new_content)
+            new_content = pattern.sub(replacement, new_content, count=1)
             modified = True
             break
 
@@ -104,6 +124,54 @@ def get_dependency_ref_key(path: Path, package_name: str) -> Optional[str]:
         return "rev"
     if re.search(r'\btag\s*=', body, re.IGNORECASE):
         return "tag"
+    return None
+
+
+def resolve_poetry_pin(
+    ref_key: Optional[RefKey],
+    trigger: str,
+    target_ref: str,
+    *,
+    dep_repo: str,
+    source_repo: Optional[str] = None,
+    source_sha: Optional[str] = None,
+    resolve_tag_sha: Optional[Callable[[str, str], Optional[str]]] = None,
+) -> Optional[str]:
+    """Choose the ``rev`` or ``tag`` value to write for a Poetry git dependency.
+
+    * **tag**-pinned consumers on a **tag** release → write the semver tag (``vX.Y.Z``).
+    * **rev**-pinned consumers on a **tag** release → write the peeled commit SHA.
+    * **rev**-pinned consumers on a **push** → write the commit SHA.
+    * **tag**-pinned consumers on a **push** → skip (no semver release yet).
+    """
+    from ..triggers import is_commit_sha
+
+    if ref_key == "tag":
+        if trigger == "push":
+            return None
+        if target_ref.startswith("v"):
+            return target_ref
+        return None
+
+    if ref_key == "rev":
+        if is_commit_sha(target_ref):
+            return target_ref
+        if dep_repo == source_repo and source_sha:
+            return source_sha
+        if target_ref.startswith("v") and resolve_tag_sha:
+            return resolve_tag_sha(dep_repo, target_ref)
+        return None
+
+    if is_commit_sha(target_ref):
+        return target_ref
+    if dep_repo == source_repo and source_sha:
+        return source_sha
+    if trigger == "tag" and target_ref.startswith("v"):
+        return target_ref
+    if trigger == "tag" and target_ref.startswith("v") and resolve_tag_sha:
+        return resolve_tag_sha(dep_repo, target_ref)
+    if trigger == "push" and dep_repo == source_repo and source_sha:
+        return source_sha
     return None
 
 
