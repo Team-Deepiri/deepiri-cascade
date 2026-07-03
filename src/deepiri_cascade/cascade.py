@@ -12,7 +12,7 @@ from rich.table import Table
 
 from .ci_logging import compute_dependency_waves
 from .manifest import iter_package_manifests
-from .parser import npm, poetry, gitmodules
+from .parser import npm, poetry, pep508, gitmodules
 from .triggers import TriggerType, branch_name_suffix, display_ref, is_commit_sha
 
 console = Console()
@@ -221,6 +221,34 @@ class CascadeProcessor:
                                 bumped = poetry.bump_pyproject_version(manifest.path, self.bump_type)
                                 self._remember_bumped_version(bumped)
                                 self._regenerate_poetry_lock(manifest.project_dir)
+                                updated = True
+
+                elif manifest.kind == "pep621":
+                    deps = pep508.parse_project_dependencies(manifest.path)
+                    for dep_name, dep_repo in deps.items():
+                        if dep_repo in target_refs:
+                            matched_dependency = True
+                            ref_key = pep508.get_dependency_ref_key(manifest.path, dep_name)
+                            target_ref = target_refs[dep_repo]
+                            update_ref = pep508.resolve_pep508_pin(
+                                ref_key,
+                                self._trigger,
+                                target_ref,
+                                dep_repo=dep_repo,
+                                source_repo=self._source_repo,
+                                source_sha=self._source_sha,
+                                resolve_tag_sha=self._get_tag_sha,
+                            )
+                            if update_ref is None:
+                                continue
+                            if pep508.update_project_dependency(
+                                manifest.path,
+                                dep_name,
+                                update_ref,
+                            ):
+                                console.print(f"    [green]Updated {manifest.path.relative_to(clone_path)}[/green]")
+                                bumped = poetry.bump_pyproject_version(manifest.path, self.bump_type)
+                                self._remember_bumped_version(bumped)
                                 updated = True
 
                 elif manifest.kind == "gitmodules":

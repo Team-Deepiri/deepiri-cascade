@@ -4,7 +4,8 @@ from pathlib import Path
 import tempfile
 import json
 
-from deepiri_cascade.parser import npm, poetry, gitmodules
+from deepiri_cascade.parser import npm, poetry, pep508, gitmodules
+from deepiri_cascade.manifest import _pyproject_kind
 
 
 class TestNpmParser:
@@ -275,6 +276,125 @@ deepiri-gpu-utils = {git = "https://github.com/team-deepiri/deepiri-gpu-utils.gi
             source_repo="deepiri-gpu-utils",
             source_sha="c" * 40,
         ) is None
+
+
+class TestPep508Parser:
+    def test_parse_project_dependencies_git_tag(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+            f.write("""
+[project]
+name = "deepiri-ollama-utils"
+version = "0.2.0"
+dependencies = [
+  "httpx>=0.27",
+  "deepiri-gpu-utils @ git+https://github.com/Team-Deepiri/deepiri-gpu-utils.git@v0.2.0",
+]
+""")
+            f.flush()
+            deps = pep508.parse_project_dependencies(Path(f.name))
+            assert deps == {"deepiri-gpu-utils": "deepiri-gpu-utils"}
+
+    def test_update_project_dependency_tag_pin(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+            f.write("""
+[project]
+name = "deepiri-ollama-utils"
+version = "0.2.0"
+dependencies = [
+  "deepiri-gpu-utils @ git+https://github.com/Team-Deepiri/deepiri-gpu-utils.git@v0.1.0",
+]
+""")
+            f.flush()
+            path = Path(f.name)
+            assert pep508.get_dependency_ref_key(path, "deepiri-gpu-utils") == "tag"
+            assert pep508.update_project_dependency(path, "deepiri-gpu-utils", "v0.2.0") is True
+            assert "@v0.2.0" in path.read_text()
+
+    def test_update_project_dependency_commit_pin(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+            old_sha = "a" * 40
+            new_sha = "b" * 40
+            f.write(f"""
+[project]
+name = "consumer"
+version = "0.1.0"
+dependencies = [
+  "deepiri-gpu-utils @ git+https://github.com/Team-Deepiri/deepiri-gpu-utils.git@{old_sha}",
+]
+""")
+            f.flush()
+            path = Path(f.name)
+            assert pep508.get_dependency_ref_key(path, "deepiri-gpu-utils") == "rev"
+            assert pep508.update_project_dependency(path, "deepiri-gpu-utils", new_sha) is True
+            assert f"@{new_sha}" in path.read_text()
+
+    def test_update_project_dependency_returns_false_when_already_current(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+            f.write("""
+[project]
+dependencies = [
+  "deepiri-gpu-utils @ git+https://github.com/Team-Deepiri/deepiri-gpu-utils.git@v0.2.0",
+]
+""")
+            f.flush()
+            path = Path(f.name)
+            assert pep508.update_project_dependency(path, "deepiri-gpu-utils", "v0.2.0") is False
+
+    def test_resolve_pep508_pin_tag_on_tag_release(self):
+        assert pep508.resolve_pep508_pin(
+            "tag",
+            "tag",
+            "v0.2.0",
+            dep_repo="deepiri-gpu-utils",
+            source_repo="deepiri-gpu-utils",
+            source_sha="c" * 40,
+        ) == "v0.2.0"
+
+    def test_resolve_pep508_pin_rev_on_tag_release(self):
+        sha = "d" * 40
+        assert pep508.resolve_pep508_pin(
+            "rev",
+            "tag",
+            "v0.2.0",
+            dep_repo="deepiri-gpu-utils",
+            source_repo="deepiri-gpu-utils",
+            source_sha=sha,
+        ) == sha
+
+    def test_resolve_pep508_pin_skips_tag_on_push(self):
+        assert pep508.resolve_pep508_pin(
+            "tag",
+            "push",
+            "e" * 40,
+            dep_repo="deepiri-gpu-utils",
+            source_repo="deepiri-gpu-utils",
+            source_sha="e" * 40,
+        ) is None
+
+    def test_pyproject_kind_detects_pep621(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+            f.write("""
+[build-system]
+requires = ["setuptools>=68"]
+
+[project]
+name = "deepiri-ollama-utils"
+dependencies = []
+""")
+            f.flush()
+            assert _pyproject_kind(Path(f.name)) == "pep621"
+
+    def test_pyproject_kind_detects_poetry(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+            f.write("""
+[tool.poetry]
+name = "consumer"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+""")
+            f.flush()
+            assert _pyproject_kind(Path(f.name)) == "poetry"
 
 
 class TestGitmodulesParser:
