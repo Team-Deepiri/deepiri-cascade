@@ -33,48 +33,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Prepare GitHub App private key
-        id: app-key
-        env:
-          APP_ID: ${{ secrets.APP_ID }}
-          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -z "${APP_ID// }" ]; then
-            echo "::error::APP_ID secret is empty. See docs/SECRETS.md."
-            exit 1
-          fi
-          if [ -z "${APP_PRIVATE_KEY// }" ]; then
-            echo "::error::APP_PRIVATE_KEY secret is empty. See docs/SECRETS.md."
-            exit 1
-          fi
-          KEY_FILE="$RUNNER_TEMP/github-app.pem"
-          # Secrets are sometimes pasted with literal \n instead of newlines.
-          printf '%b' "$APP_PRIVATE_KEY" > "$KEY_FILE"
-          if grep -q 'BEGIN RSA PRIVATE KEY' "$KEY_FILE"; then
-            PKCS8_FILE="$RUNNER_TEMP/github-app-pkcs8.pem"
-            openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt \
-              -in "$KEY_FILE" -out "$PKCS8_FILE"
-            KEY_FILE="$PKCS8_FILE"
-          fi
-          {
-            echo "private-key<<EOF"
-            cat "$KEY_FILE"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Generate App token
-        id: app-token
-        uses: actions/create-github-app-token@v3.2.0
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ steps.app-key.outputs.private-key }}
-          owner: ${{ env.ORG }}
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Generate App token
+        id: app-token
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          GITHUB_APP_OWNER: ${{ env.ORG }}
+        run: |
+          python -m pip install --quiet PyJWT cryptography httpx
+          python scripts/mint_github_app_token.py
 
       - name: Install dependencies
         run: |
