@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import base64
 import os
+import re
 import sys
 import time
 
@@ -25,14 +27,41 @@ def _fail(message: str) -> None:
 
 def normalize_pem(raw: str) -> str:
     pem = raw.replace("\\n", "\n").strip()
-    if not pem:
-        _fail("APP_PRIVATE_KEY is empty")
-    if "BEGIN" not in pem or "PRIVATE KEY" not in pem:
-        _fail(
-            "APP_PRIVATE_KEY does not look like a PEM private key. "
-            "Paste the full downloaded .pem file into the repo secret."
-        )
-    return pem
+    if (pem.startswith('"') and pem.endswith('"')) or (pem.startswith("'") and pem.endswith("'")):
+        pem = pem[1:-1].strip()
+
+    if "BEGIN" in pem and "PRIVATE KEY" in pem:
+        return pem
+
+    # Some teams base64-encode the entire PEM file into the secret.
+    try:
+        decoded = base64.b64decode(pem, validate=True).decode()
+        if "BEGIN" in decoded and "PRIVATE KEY" in decoded:
+            return decoded.strip()
+    except Exception:
+        pass
+
+    # Recover a raw base64 body missing PEM headers.
+    compact = re.sub(r"\s+", "", pem)
+    if re.fullmatch(r"[A-Za-z0-9+/=]+", compact):
+        for header, footer in (
+            ("-----BEGIN PRIVATE KEY-----", "-----END PRIVATE KEY-----"),
+            ("-----BEGIN RSA PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----"),
+        ):
+            wrapped = header + "\n"
+            for index in range(0, len(compact), 64):
+                wrapped += compact[index : index + 64] + "\n"
+            wrapped += footer + "\n"
+            try:
+                load_pem_private_key(wrapped.encode(), password=None)
+                return wrapped
+            except Exception:
+                continue
+
+    _fail(
+        "APP_PRIVATE_KEY does not look like a PEM private key. "
+        "Paste the full downloaded .pem file into the repo secret."
+    )
 
 
 def validate_private_key(pem: str) -> None:
