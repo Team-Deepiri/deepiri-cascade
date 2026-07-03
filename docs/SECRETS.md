@@ -31,7 +31,7 @@ Add these four secrets in the **deepiri-cascade** repository.
 | Secret | Used by | Value |
 |--------|---------|-------|
 | `APP_ID` | `cascade.yml`, `reusable.yml` | Numeric ID of the `deepiri-cascade` GitHub App |
-| `APP_PRIVATE_KEY` | `cascade.yml`, `reusable.yml` | Full contents of the App `.pem` file (include `-----BEGIN/END RSA PRIVATE KEY-----` lines) |
+| `APP_PRIVATE_KEY` | `cascade.yml`, `reusable.yml` | Full contents of the App `.pem` file (include `-----BEGIN ... PRIVATE KEY-----` and `-----END ... PRIVATE KEY-----` lines, with real newlines — not literal `\n`) |
 | `CLOUDFLARE_API_TOKEN` | `deploy.yml` | Cloudflare API token with permission to deploy Workers |
 | `CLOUDFLARE_ACCOUNT_ID` | `deploy.yml` | Cloudflare account ID (Wrangler / dashboard) |
 
@@ -139,6 +139,17 @@ Cascade writes `.npmrc` with `//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN
 1. **Tag trigger** — push `vX.Y.Z` on a library repo (e.g. `deepiri-gpu-utils`). Expect a cascade PR in consumers with `tag=` or `rev=` updated per pin style.
 2. **Push trigger** — merge to `main` on a platform service. Expect a submodule pointer PR in `deepiri-platform` (or run `monitor-push.yml` manually).
 3. **Manual** — Actions → **Cascade Update** → **Run workflow** with `repo`, `tag` or `sha`, and `trigger`.
+
+---
+
+## Troubleshooting — `Invalid keyData` in Cascade Update
+
+If **Generate App token** fails with `Invalid keyData` / `header too long`:
+
+1. **Action runtime** — `cascade.yml` uses `actions/create-github-app-token@v3.2.0` (Node 24). Older `@v1` breaks on current GitHub runners.
+2. **App ID** — `APP_ID` must be the numeric GitHub App ID for the same App as the PEM (not empty, not a Client ID from the wrong field).
+3. **Private key** — paste the **entire** downloaded `.pem` into `APP_PRIVATE_KEY`. PKCS#1 (`BEGIN RSA PRIVATE KEY`) is auto-converted in CI; PKCS#8 (`BEGIN PRIVATE KEY`) is preferred.
+4. **Matching pair** — App ID and private key must belong to the same GitHub App installation on **Team-Deepiri**.
 
 ---
 
