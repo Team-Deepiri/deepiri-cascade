@@ -2,6 +2,8 @@
 
 Operational guide for admins with org/repo access. Covers the **PR #242 token leak**, GitHub App rotation, `NODE_AUTH_TOKEN` for npm/GitHub Packages, and application secrets for platform services.
 
+> **@Team-Deepiri/it-management-team — urgent (2026-07-03):** `Team-Deepiri/deepiri-cascade` **Cascade Update** cannot mint an App token. The Actions secret `APP_PRIVATE_KEY` is not a valid PEM. Rotate per [SECRETS.md § Rotating credentials](./SECRETS.md#rotating-credentials) (also [§2 below](#2-rotate-the-deepiri-cascade-github-app-credentials)) before tag cascades (e.g. `deepiri-training-orchestrator` `v0.4.1`) can run.
+
 ---
 
 ## 1. Immediate response — leaked token in PR #242
