@@ -155,6 +155,29 @@ If **Generate App token** fails with `Invalid keyData` / `header too long`:
 
 ## Rotating credentials
 
-@Team-Deepiri/it-management-team — use this when rotating App keys or responding to a leaked token.
+@Team-Deepiri/it-management-team — **action required now (2026-07-03):** Cascade Update is failing because `APP_PRIVATE_KEY` in this repo is not a valid GitHub App PEM. Rotate/replace the secret before the next tag cascade.
+
+### Rotate `APP_PRIVATE_KEY` now
+
+1. Open **GitHub → Organization settings → GitHub Apps → `deepiri-cascade`**  
+   (`https://github.com/organizations/team-deepiri/settings/apps/deepiri-cascade`)
+2. Under **Private keys**, click **Generate a private key** and download the `.pem`.
+3. In **Team-Deepiri/deepiri-cascade → Settings → Secrets and variables → Actions**, update:
+   - `APP_PRIVATE_KEY` — paste the **entire** `.pem` (include `-----BEGIN ... PRIVATE KEY-----` / `-----END ... PRIVATE KEY-----`, real newlines)
+   - `APP_ID` — confirm it is the **numeric App ID** for that same App (unchanged unless the App was recreated)
+4. Update the Cloudflare Worker secrets to match (same PEM + App ID):
+   ```bash
+   cd worker
+   wrangler secret put GITHUB_APP_ID
+   wrangler secret put GITHUB_APP_PRIVATE_KEY
+   ```
+5. Revoke the old App private key in GitHub App settings after the new secret works.
+6. Smoke test: **Actions → Cascade Update → Run workflow** with `repo=deepiri-training-orchestrator`, `tag=v0.4.1`, `trigger=tag`.
+
+If the workflow still fails, check the **Generate App token** step — `scripts/mint_github_app_token.py` prints whether the PEM is invalid or the App ID/key pair mismatches.
+
+---
+
+@Team-Deepiri/it-management-team — use the section below when rotating App keys routinely or responding to a leaked token.
 
 To rotate the App private key, update **both** Actions secrets (`APP_PRIVATE_KEY`) and Worker secrets (`GITHUB_APP_PRIVATE_KEY`), then revoke the old key in the App settings. Full steps: [IT_SECRETS_RUNBOOK.md](./IT_SECRETS_RUNBOOK.md#2-rotate-the-deepiri-cascade-github-app-credentials).
