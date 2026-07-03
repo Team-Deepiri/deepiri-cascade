@@ -146,7 +146,7 @@ Cascade writes `.npmrc` with `//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN
 
 If **Generate App token** fails with `Invalid keyData` / `header too long`:
 
-1. **Action runtime** — `cascade.yml` uses `actions/create-github-app-token@v3.2.0` (Node 24). Older `@v1` breaks on current GitHub runners.
+1. **Action runtime** — cascade mints tokens with `scripts/mint_github_app_token.py` (PyJWT + cryptography), avoiding Node 24 `Invalid keyData` issues from `actions/create-github-app-token@v1`.
 2. **App ID** — `APP_ID` must be the numeric GitHub App ID for the same App as the PEM (not empty, not a Client ID from the wrong field).
 3. **Private key** — paste the **entire** downloaded `.pem` into `APP_PRIVATE_KEY`. PKCS#1 (`BEGIN RSA PRIVATE KEY`) is auto-converted in CI; PKCS#8 (`BEGIN PRIVATE KEY`) is preferred.
 4. **Matching pair** — App ID and private key must belong to the same GitHub App installation on **Team-Deepiri**.
