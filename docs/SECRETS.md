@@ -31,7 +31,7 @@ Add these four secrets in the **deepiri-cascade** repository.
 | Secret | Used by | Value |
 |--------|---------|-------|
 | `APP_ID` | `cascade.yml`, `reusable.yml` | Numeric ID of the `deepiri-cascade` GitHub App |
-| `APP_PRIVATE_KEY` | `cascade.yml`, `reusable.yml` | Full contents of the App `.pem` file (include `-----BEGIN ... PRIVATE KEY-----` and `-----END ... PRIVATE KEY-----` lines, with real newlines — not literal `\n`) |
+| `APP_PRIVATE_KEY` | `cascade.yml`, `reusable.yml` | Full contents of the App `.pem` file (include `-----BEGIN ... PRIVATE KEY-----` and `-----END ... PRIVATE KEY-----` lines, with real newlines — not literal `\n`). If cascade logs `APP_PRIVATE_KEY does not look like a PEM`, re-download the key from the GitHub App settings and replace this secret. |
 | `CLOUDFLARE_API_TOKEN` | `deploy.yml` | Cloudflare API token with permission to deploy Workers |
 | `CLOUDFLARE_ACCOUNT_ID` | `deploy.yml` | Cloudflare account ID (Wrangler / dashboard) |
 
