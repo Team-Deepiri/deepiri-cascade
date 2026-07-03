@@ -475,8 +475,9 @@ class TestGitmodulesParser:
         assert calls[0][0] == ["git", "submodule", "sync", "--recursive", "libs/deepiri-core"]
         assert calls[0][1]["cwd"] == repo
         assert calls[1][0] == ["git", "submodule", "update", "--init", "--recursive", "libs/deepiri-core"]
-        assert calls[2][0] == ["git", "fetch", "origin", "--tags", "--force"]
+        assert calls[2][0] == ["git", "fetch", "origin", "--force", "--tags"]
         assert calls[3][0] == ["git", "checkout", "abc123"]
+        assert calls[4][0] == ["git", "add", "libs/deepiri-core"]
         assert calls[2][1]["cwd"] == submodule
 
     def test_update_submodule_ref_accepts_git_config_args(self, tmp_path, monkeypatch):
@@ -527,7 +528,7 @@ class TestGitmodulesParser:
         monkeypatch.setattr("deepiri_cascade.parser.gitmodules.subprocess.run", fake_run)
 
         assert gitmodules.update_submodule_ref(repo, "libs/deepiri-core", "abc123") is False
-        assert calls[2] == ["git", "fetch", "origin", "--tags", "--force"]
+        assert calls[2] == ["git", "fetch", "origin", "--force", "--tags"]
 
     def test_update_submodule_ref_returns_false_when_init_fails(self, tmp_path, monkeypatch):
         repo = tmp_path / "repo"

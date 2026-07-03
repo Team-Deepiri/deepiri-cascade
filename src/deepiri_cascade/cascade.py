@@ -43,6 +43,7 @@ class CascadeProcessor:
         self._active_target_refs: Dict[str, str] = {}
         self._last_bumped_version: Optional[str] = None
         self._last_primary_upstream: Optional[str] = None
+        self._last_pushed_sha: Optional[str] = None
 
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.headers = {
@@ -131,9 +132,14 @@ class CascadeProcessor:
                 status = self._update_repo(repo, primary_repo, primary_ref)
                 if status == "updated":
                     results["updated"].append(repo)
-                    propagated = self._propagated_ref_for_repo(repo)
-                    if propagated:
-                        self._cascade_refs[repo] = propagated
+                    pushed_sha = getattr(self, "_last_pushed_sha", None)
+                    if pushed_sha:
+                        self._cascade_refs[repo] = pushed_sha
+                        if self.verbose:
+                            console.print(
+                                f"    [dim]Recorded {repo}@{self._last_pushed_sha[:8]} "
+                                f"for downstream submodule updates[/dim]"
+                            )
                 elif status == "skipped":
                     results["skipped"].append(repo)
                 else:
@@ -162,6 +168,7 @@ class CascadeProcessor:
         """Update a single dependent repo."""
         console.print(f"  Updating {repo_name}...")
         self._last_bumped_version = None
+        self._last_pushed_sha = None
         target_refs = getattr(self, "_active_target_refs", None) or {source_repo: source_tag}
 
         if self.dry_run:
@@ -385,13 +392,6 @@ class CascadeProcessor:
 
         return ref
 
-    def _propagated_ref_for_repo(self, repo_name: str) -> Optional[str]:
-        """Ref downstream repos should use when depending on a just-updated consumer."""
-        primary = getattr(self, "_last_primary_upstream", None)
-        if not primary or primary not in self._active_target_refs:
-            return None
-        return self._resolve_update_ref(primary, self._active_target_refs[primary])
-
     def _get_default_branch_sha(self, repo_name: str) -> Optional[str]:
         branch = self._get_default_branch(repo_name)
         url = f"https://api.github.com/repos/{self.org}/{repo_name}/commits/{branch}"
@@ -468,6 +468,18 @@ class CascadeProcessor:
                 console.print(f"    [red]git push failed: {push.stderr[:200]}[/red]")
                 return None
 
+            rev = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=clone_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if rev.returncode != 0:
+                console.print(f"    [red]git rev-parse failed: {rev.stderr[:200]}[/red]")
+                return None
+
+            self._last_pushed_sha = rev.stdout.strip()
             return branch_name
 
         except Exception as e:

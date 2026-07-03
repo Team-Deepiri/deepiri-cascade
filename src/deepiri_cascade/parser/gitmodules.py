@@ -124,11 +124,11 @@ def update_submodule_ref_result(
             return SubmoduleUpdateResult(False, "submodule path", f"{submodule_path} does not exist after init")
 
         fetch = subprocess.run(
-            [*git_prefix, "fetch", "origin", "--tags", "--force"],
+            [*git_prefix, "fetch", "origin", "--force", "--tags"],
             cwd=submodule_full_path,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=120,
         )
         if fetch.returncode != 0:
             return SubmoduleUpdateResult(False, "submodule fetch", fetch.stderr.strip())
@@ -150,10 +150,35 @@ def update_submodule_ref_result(
                     text=True,
                     timeout=30,
                 )
-                if result.returncode != 0:
-                    return SubmoduleUpdateResult(False, "submodule checkout", result.stderr.strip())
-            else:
+            if result.returncode != 0:
+                # Cascade branch commits may not be reachable from tags-only fetch.
+                ref_fetch = subprocess.run(
+                    [*git_prefix, "fetch", "origin", new_ref],
+                    cwd=submodule_full_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                if ref_fetch.returncode == 0:
+                    result = subprocess.run(
+                        [*git_prefix, "checkout", "-f", new_ref],
+                        cwd=submodule_full_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+            if result.returncode != 0:
                 return SubmoduleUpdateResult(False, "submodule checkout", result.stderr.strip())
+
+        stage = subprocess.run(
+            [*git_prefix, "add", submodule_path],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if stage.returncode != 0:
+            return SubmoduleUpdateResult(False, "submodule stage", stage.stderr.strip())
 
         return SubmoduleUpdateResult(True)
 
