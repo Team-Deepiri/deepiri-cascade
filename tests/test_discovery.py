@@ -53,6 +53,11 @@ class TestResolveDepToRepo:
             "deepiri-shared-utils", "deepiri-shared-utils", REPOS
         ) == "deepiri-shared-utils"
 
+    def test_pep621_value_is_repo_name(self):
+        assert self.d._resolve_dep_to_repo(
+            "deepiri-ollama-utils", "deepiri-gpu-utils", REPOS | {"deepiri-gpu-utils", "deepiri-ollama-utils"}
+        ) == "deepiri-gpu-utils"
+
     def test_unrelated_dep_returns_none(self):
         assert self.d._resolve_dep_to_repo("express", "^4.0.0", REPOS) is None
 
@@ -169,6 +174,17 @@ class TestBuildDependencyGraph:
         dependents = graph["deepiri-shared-utils"]
         assert "deepiri-api-gateway" in dependents
         assert "deepiri-platform" in dependents
+
+    def test_pep621_deps_detected_in_graph(self):
+        d = self._make_discovery({
+            "deepiri-gpu-utils": {},
+            "deepiri-ollama-utils": {
+                "deepiri-gpu-utils": "deepiri-gpu-utils",
+            },
+        })
+
+        graph = d.build_dependency_graph("deepiri-gpu-utils", "v0.2.0")
+        assert "deepiri-ollama-utils" in graph["deepiri-gpu-utils"]
 
     def test_no_dependents(self):
         d = self._make_discovery({
