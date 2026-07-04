@@ -132,7 +132,7 @@ class TestCascadeRunResults:
         proc._trigger = "tag"
         proc._active_target_refs = {"deepiri-gpu-utils": "v1.0.0"}
         proc._get_or_clone_repo = lambda repo_name: tmp_path
-        proc._regenerate_poetry_lock = lambda clone_path: None
+        proc._regenerate_poetry_lock = lambda clone_path, package_name: True
         proc._create_pull_request = lambda repo_name, clone_path: "https://example.test/pr"
 
         pyproject = tmp_path / "pyproject.toml"
@@ -163,7 +163,7 @@ deepiri-gpu-utils = {git = "https://github.com/Team-Deepiri/deepiri-gpu-utils.gi
         proc._source_repo = "deepiri-gpu-utils"
         proc._active_target_refs = {"deepiri-gpu-utils": "v0.1.1"}
         proc._get_or_clone_repo = lambda repo_name: tmp_path
-        proc._regenerate_poetry_lock = lambda clone_path: None
+        proc._regenerate_poetry_lock = lambda clone_path, package_name: True
         proc._create_pull_request = lambda repo_name, clone_path: "https://example.test/pr"
 
         pyproject = tmp_path / "pyproject.toml"
@@ -587,6 +587,59 @@ class TestNpmAuthInjection:
         assert "save-exact=true" in content
         assert "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" in content
         assert "new-token" not in content
+
+
+class TestPoetryLockRegeneration:
+    def test_regenerate_poetry_lock_updates_changed_package_only(self, tmp_path, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.token = "secret-token"
+        calls = []
+
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return Result()
+
+        def fake_configure_git_auth(path):
+            calls.append(("configure_git_auth", path))
+
+        monkeypatch.setattr("deepiri_cascade.cascade.subprocess.run", fake_run)
+        proc._configure_git_auth = fake_configure_git_auth
+        proc._poetry_command = lambda: ["poetry"]
+
+        assert proc._regenerate_poetry_lock(tmp_path, "deepiri-gpu-utils") is True
+
+        assert calls[0] == ("configure_git_auth", tmp_path)
+        assert calls[1][0] == [
+            "poetry",
+            "update",
+            "--lock",
+            "--no-interaction",
+            "deepiri-gpu-utils",
+        ]
+        assert calls[1][1]["cwd"] == tmp_path
+
+    def test_regenerate_poetry_lock_returns_false_on_failure(self, tmp_path, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.token = "secret-token"
+
+        class Result:
+            returncode = 1
+            stdout = ""
+            stderr = "git clone failed"
+
+        monkeypatch.setattr(
+            "deepiri_cascade.cascade.subprocess.run",
+            lambda *args, **kwargs: Result(),
+        )
+        proc._configure_git_auth = lambda path: None
+        proc._poetry_command = lambda: ["poetry"]
+
+        assert proc._regenerate_poetry_lock(tmp_path, "deepiri-gpu-utils") is False
 
 
 class TestNpmLockRegeneration:
