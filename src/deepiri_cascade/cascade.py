@@ -227,8 +227,12 @@ class CascadeProcessor:
                                 console.print(f"    [green]Updated {manifest.path.relative_to(clone_path)}[/green]")
                                 bumped = poetry.bump_pyproject_version(manifest.path, self.bump_type)
                                 self._remember_bumped_version(bumped)
-                                self._regenerate_poetry_lock(manifest.project_dir)
-                                updated = True
+                                if self._regenerate_poetry_lock(
+                                    manifest.project_dir, dep_name
+                                ):
+                                    updated = True
+                                else:
+                                    update_failed = True
 
                 elif manifest.kind == "pep621":
                     deps = pep508.parse_project_dependencies(manifest.path)
@@ -683,22 +687,32 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
             return ["poetry"]
         return [sys.executable, "-m", "poetry"]
 
-    def _regenerate_poetry_lock(self, clone_path: Path):
-        """Regenerate poetry.lock."""
+    def _regenerate_poetry_lock(self, clone_path: Path, package_name: str) -> bool:
+        """Refresh poetry.lock for a dependency whose pin changed in pyproject.toml."""
+        self._configure_git_auth(clone_path)
         try:
             result = subprocess.run(
-                [*self._poetry_command(), "lock", "--no-update"],
+                [
+                    *self._poetry_command(),
+                    "update",
+                    "--lock",
+                    "--no-interaction",
+                    package_name,
+                ],
                 cwd=clone_path,
                 capture_output=True,
                 text=True,
                 timeout=180,
             )
             if result.returncode == 0:
-                console.print(f"    [green]Regenerated poetry.lock[/green]")
-            else:
-                console.print(f"    [yellow]poetry lock warning: {result.stderr[:200]}[/yellow]")
+                console.print(f"    [green]Regenerated poetry.lock ({package_name})[/green]")
+                return True
+            detail = (result.stderr or result.stdout or "unknown error")[:300]
+            console.print(f"    [red]poetry update --lock failed: {detail}[/red]")
+            return False
         except Exception as e:
-            console.print(f"    [yellow]poetry lock error: {e}[/yellow]")
+            console.print(f"    [red]poetry update --lock error: {e}[/red]")
+            return False
 
     def _ensure_git_identity(self, path: Path):
         """Set a local git identity when Actions did not provide one."""
