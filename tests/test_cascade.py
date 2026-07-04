@@ -589,6 +589,87 @@ class TestNpmAuthInjection:
         assert "new-token" not in content
 
 
+class TestAutoMerge:
+    def test_ensure_repo_auto_merge_skips_when_already_enabled(self, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc.headers = {}
+        proc._get_repository = lambda repo: {"allow_auto_merge": True}
+
+        patch_calls = []
+        monkeypatch.setattr(
+            "deepiri_cascade.cascade.httpx.patch",
+            lambda *args, **kwargs: patch_calls.append((args, kwargs)),
+        )
+
+        assert proc._ensure_repo_auto_merge("consumer") is True
+        assert patch_calls == []
+
+    def test_ensure_repo_auto_merge_patches_repo_setting(self, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc.headers = {"Authorization": "Bearer test"}
+        proc._get_repository = lambda repo: {"allow_auto_merge": False}
+
+        class Response:
+            status_code = 200
+            text = ""
+
+        monkeypatch.setattr(
+            "deepiri_cascade.cascade.httpx.patch",
+            lambda url, **kwargs: Response(),
+        )
+
+        assert proc._ensure_repo_auto_merge("consumer") is True
+
+    def test_pick_merge_method_prefers_squash(self):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc._get_repository = lambda repo: {
+            "allow_squash_merge": True,
+            "allow_merge_commit": True,
+        }
+
+        assert proc._pick_merge_method("consumer") == "SQUASH"
+
+    def test_schedule_pull_request_auto_merge_enables_repo_and_pr(self, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        calls = []
+        proc._ensure_repo_auto_merge = lambda repo: calls.append(("repo", repo)) or True
+        proc._pick_merge_method = lambda repo: "SQUASH"
+        proc._enable_auto_merge = lambda node_id, merge_method: (
+            calls.append(("merge", node_id, merge_method)) or True
+        )
+
+        proc._schedule_pull_request_auto_merge(
+            "consumer",
+            {"node_id": "PR_123", "number": 42},
+        )
+
+        assert calls == [
+            ("repo", "consumer"),
+            ("merge", "PR_123", "SQUASH"),
+        ]
+
+    def test_enable_auto_merge_logs_graphql_error(self, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.headers = {}
+
+        class Response:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"errors": [{"message": "Auto merge is not allowed for this repository"}]}
+
+        monkeypatch.setattr(
+            "deepiri_cascade.cascade.httpx.post",
+            lambda *args, **kwargs: Response(),
+        )
+
+        assert proc._enable_auto_merge("PR_123", "MERGE") is False
+
+
 class TestPoetryLockRegeneration:
     def test_regenerate_poetry_lock_updates_changed_package_only(self, tmp_path, monkeypatch):
         proc = CascadeProcessor.__new__(CascadeProcessor)
