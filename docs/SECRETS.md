@@ -18,7 +18,7 @@ Settings path: **Settings → Secrets and variables → Actions**
 | **Tag Monitor** (`monitor.yml`) | Cron every 5 min | `GITHUB_TOKEN` (automatic) | Polls org tags → dispatches cascade |
 | **Push Monitor** (`monitor-push.yml`) | Cron every 5 min | `GITHUB_TOKEN` (automatic) | Polls default-branch HEAD → dispatches cascade |
 | **Cascade Update** (`cascade.yml`) | Dispatch / manual | `APP_ID`, `APP_PRIVATE_KEY` | **Blocked until App secrets are set** |
-| **Deploy Worker** (`deploy.yml`) | Push to `main` (`worker/`) | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | **Blocked until Cloudflare secrets are set** |
+| **Deploy Worker** (`deploy.yml`) | After CI passes on `main` | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | **Blocked until Cloudflare secrets are set** |
 
 **Summary:** CI and monitors work today with zero manual secrets. Cascade PR creation and worker deploy only need the four Actions secrets below (+ two Worker secrets via Wrangler). No other configuration is required.
 
@@ -40,7 +40,7 @@ Add these four secrets in the **deepiri-cascade** repository.
 | Workflow | Secrets |
 |----------|---------|
 | `cascade.yml` | `APP_ID`, `APP_PRIVATE_KEY` → mints an installation token to clone repos, bump deps, and open PRs |
-| `deploy.yml` | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` → runs `wrangler deploy` when `worker/` changes on `main` |
+| `deploy.yml` | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` → runs `wrangler deploy` after CI passes on `main` |
 | `monitor.yml` | *(none — uses built-in `GITHUB_TOKEN`)* |
 | `monitor-push.yml` | *(none — uses built-in `GITHUB_TOKEN`)* |
 
@@ -75,7 +75,7 @@ wrangler deploy
 
 The worker receives GitHub App webhooks (tag create + default-branch push) and dispatches `cascade-trigger` to `deepiri-cascade`.
 
-After merging worker changes to `main`, `deploy.yml` redeploys automatically when the four Actions secrets above are set.
+After merging to `main`, `deploy.yml` publishes the worker automatically once CI passes (when the four Actions secrets above are set).
 
 ---
 
