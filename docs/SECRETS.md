@@ -89,9 +89,10 @@ Create or verify the App at **GitHub → Developer settings → GitHub Apps → 
 |------------|-------|
 | Repository contents | Read and write |
 | Pull requests | Read and write |
+| Administration | Read and write |
 | Metadata | Read |
 
-Contents write is required so cascade can push branches and open PRs in consumer repos.
+Contents write is required so cascade can push branches and open PRs in consumer repos. Administration write lets cascade turn on **Allow auto-merge** on consumer repos so dependency PRs merge automatically once CI passes.
 
 ### Subscribed events
 
@@ -127,7 +128,7 @@ Cascade writes `.npmrc` with `//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN
 
 @Team-Deepiri/it-management-team
 
-- [ ] GitHub App created with permissions and events above
+- [ ] GitHub App created with permissions and events above (include **Administration: Read and write** for auto-merge)
 - [ ] App installed on **Team-Deepiri**
 - [ ] Actions secrets: `APP_ID`, `APP_PRIVATE_KEY`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`
 - [ ] Worker secrets: `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`
@@ -139,6 +140,12 @@ Cascade writes `.npmrc` with `//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN
 1. **Tag trigger** — push `vX.Y.Z` on a library repo (e.g. `deepiri-gpu-utils`). Expect a cascade PR in consumers with `tag=` or `rev=` updated per pin style.
 2. **Push trigger** — merge to `main` on a platform service. Expect a submodule pointer PR in `deepiri-platform` (or run `monitor-push.yml` manually).
 3. **Manual** — Actions → **Cascade Update** → **Run workflow** with `repo`, `tag` or `sha`, and `trigger`.
+
+### Auto-merge
+
+Cascade enables **Allow auto-merge** on each consumer repo (when the App has **Administration: write**) and queues the PR via `enablePullRequestAutoMerge`. GitHub merges once required status checks pass.
+
+If a repo still requires human review (`required_approving_review_count > 0`), auto-merge waits until someone approves. To fully automate dependency bumps, add the `deepiri-cascade` GitHub App to the branch protection **bypass** list for those repos.
 
 ---
 

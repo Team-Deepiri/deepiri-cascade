@@ -514,7 +514,7 @@ This PR updates the dependency on `{self._source_repo}` to `{display}`.
 - Regenerated lock files
 - Bumped {self.bump_type} version
 
-Please review and merge. Auto-merge will be enabled once CI checks pass.
+Auto-merge is enabled when required CI checks pass.
 """
 
         url = f"https://api.github.com/repos/{self.org}/{repo_name}/pulls"
@@ -531,17 +531,14 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
             if response.status_code == 201:
                 pr_data = response.json()
                 pr_url = pr_data.get("html_url")
-                pr_node_id = pr_data.get("node_id")
-                
-                if pr_node_id:
-                    self._enable_auto_merge(pr_node_id)
-                
+                self._schedule_pull_request_auto_merge(repo_name, pr_data)
                 return pr_url
             if response.status_code == 422 and "pull request already exists" in response.text.lower():
                 existing_pr = self._find_existing_pull_request(repo_name, branch_name)
                 if existing_pr:
-                    console.print(f"    [yellow]PR already exists: {existing_pr}[/yellow]")
-                    return existing_pr
+                    console.print(f"    [yellow]PR already exists: {existing_pr.get('html_url')}[/yellow]")
+                    self._schedule_pull_request_auto_merge(repo_name, existing_pr)
+                    return existing_pr.get("html_url")
                 console.print(f"    [yellow]PR already exists but could not resolve URL[/yellow]")
                 return None
             else:
@@ -552,7 +549,9 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
             console.print(f"    [red]PR creation error: {e}[/red]")
             return None
 
-    def _find_existing_pull_request(self, repo_name: str, branch_name: str) -> Optional[str]:
+    def _find_existing_pull_request(
+        self, repo_name: str, branch_name: str
+    ) -> Optional[dict]:
         """Find an open PR for a previously pushed cascade branch."""
         url = f"https://api.github.com/repos/{self.org}/{repo_name}/pulls"
         params = {
@@ -564,33 +563,114 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
             if response.status_code == 200:
                 prs = response.json()
                 if prs:
-                    return prs[0].get("html_url")
+                    return prs[0]
         except Exception:
             pass
         return None
 
-    def _enable_auto_merge(self, pull_request_id: str) -> bool:
+    def _get_repository(self, repo_name: str) -> dict:
+        """Fetch repository metadata from GitHub."""
+        url = f"https://api.github.com/repos/{self.org}/{repo_name}"
+        try:
+            response = httpx.get(url, headers=self.headers, timeout=10)
+            if response.status_code == 200:
+                return response.json()
+        except Exception:
+            pass
+        return {}
+
+    def _ensure_repo_auto_merge(self, repo_name: str) -> bool:
+        """Turn on allow_auto_merge for consumer repos when the App has admin access."""
+        repo = self._get_repository(repo_name)
+        if repo.get("allow_auto_merge"):
+            return True
+
+        url = f"https://api.github.com/repos/{self.org}/{repo_name}"
+        try:
+            response = httpx.patch(
+                url,
+                json={"allow_auto_merge": True},
+                headers=self.headers,
+                timeout=30,
+            )
+            if response.status_code == 200:
+                console.print(f"    [green]Enabled allow_auto_merge on {repo_name}[/green]")
+                return True
+            detail = response.text[:200]
+            console.print(
+                f"    [yellow]Could not enable allow_auto_merge on {repo_name}: "
+                f"{response.status_code} {detail}[/yellow]"
+            )
+        except Exception as e:
+            console.print(f"    [yellow]allow_auto_merge error: {e}[/yellow]")
+        return False
+
+    def _pick_merge_method(self, repo_name: str) -> str:
+        """Pick a merge method supported by the target repository."""
+        repo = self._get_repository(repo_name)
+        if repo.get("allow_squash_merge"):
+            return "SQUASH"
+        if repo.get("allow_merge_commit"):
+            return "MERGE"
+        if repo.get("allow_rebase_merge"):
+            return "REBASE"
+        return "MERGE"
+
+    def _schedule_pull_request_auto_merge(self, repo_name: str, pr: dict) -> None:
+        """Queue a PR to merge automatically once required checks pass."""
+        pr_node_id = pr.get("node_id")
+        pr_number = pr.get("number")
+        if not pr_node_id and pr_number:
+            pr_node_id = self._get_pull_request_node_id(repo_name, pr_number)
+        if not pr_node_id:
+            console.print("    [yellow]Could not resolve PR node id for auto-merge[/yellow]")
+            return
+
+        self._ensure_repo_auto_merge(repo_name)
+        merge_method = self._pick_merge_method(repo_name)
+        self._enable_auto_merge(pr_node_id, merge_method)
+
+    def _get_pull_request_node_id(self, repo_name: str, pr_number: int) -> Optional[str]:
+        """Look up a pull request GraphQL node id."""
+        url = f"https://api.github.com/repos/{self.org}/{repo_name}/pulls/{pr_number}"
+        try:
+            response = httpx.get(url, headers=self.headers, timeout=30)
+            if response.status_code == 200:
+                return response.json().get("node_id")
+        except Exception:
+            pass
+        return None
+
+    def _enable_auto_merge(self, pull_request_id: str, merge_method: str = "MERGE") -> bool:
         """Enable auto-merge on a pull request."""
+        if merge_method not in {"MERGE", "SQUASH", "REBASE"}:
+            merge_method = "MERGE"
+
         url = "https://api.github.com/graphql"
         payload = {
-            "query": """
-            mutation EnableAutoMerge($pullRequestId: ID!) {
-              enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId, mergeMethod: MERGE}) {
-                pullRequest { number }
-              }
-            }
+            "query": f"""
+            mutation EnableAutoMerge($pullRequestId: ID!) {{
+              enablePullRequestAutoMerge(
+                input: {{pullRequestId: $pullRequestId, mergeMethod: {merge_method}}}
+              ) {{
+                pullRequest {{ number autoMergeRequest {{ enabledAt }} }}
+              }}
+            }}
             """,
             "variables": {"pullRequestId": pull_request_id},
         }
 
         try:
             response = httpx.post(url, json=payload, headers=self.headers, timeout=30)
-            if response.status_code == 200 and not response.json().get("errors"):
-                console.print(f"    [green]Auto-merge enabled[/green]")
+            data = response.json()
+            errors = data.get("errors")
+            if response.status_code == 200 and not errors:
+                console.print(f"    [green]Auto-merge enabled ({merge_method.lower()})[/green]")
                 return True
-            else:
-                console.print(f"    [yellow]Auto-merge enable failed: {response.status_code}[/yellow]")
-                return False
+
+            message = errors[0].get("message") if errors else response.text[:200]
+            console.print(f"    [yellow]Auto-merge enable failed: {message}[/yellow]")
+            return False
         except Exception as e:
             console.print(f"    [yellow]Auto-merge error: {e}[/yellow]")
             return False
