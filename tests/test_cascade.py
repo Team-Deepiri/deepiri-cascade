@@ -132,7 +132,7 @@ class TestCascadeRunResults:
         proc._trigger = "tag"
         proc._active_target_refs = {"deepiri-gpu-utils": "v1.0.0"}
         proc._get_or_clone_repo = lambda repo_name: tmp_path
-        proc._regenerate_poetry_lock = lambda clone_path: None
+        proc._regenerate_poetry_lock = lambda clone_path, package_name: True
         proc._create_pull_request = lambda repo_name, clone_path: "https://example.test/pr"
 
         pyproject = tmp_path / "pyproject.toml"
@@ -163,7 +163,7 @@ deepiri-gpu-utils = {git = "https://github.com/Team-Deepiri/deepiri-gpu-utils.gi
         proc._source_repo = "deepiri-gpu-utils"
         proc._active_target_refs = {"deepiri-gpu-utils": "v0.1.1"}
         proc._get_or_clone_repo = lambda repo_name: tmp_path
-        proc._regenerate_poetry_lock = lambda clone_path: None
+        proc._regenerate_poetry_lock = lambda clone_path, package_name: True
         proc._create_pull_request = lambda repo_name, clone_path: "https://example.test/pr"
 
         pyproject = tmp_path / "pyproject.toml"
@@ -211,6 +211,157 @@ deepiri-gpu-utils = {git = "https://github.com/Team-Deepiri/deepiri-gpu-utils.gi
 
         assert result == "skipped"
         assert 'tag = "v0.1.0"' in pyproject.read_text()
+
+    def test_update_repo_updates_tag_pinned_pep621_dependency(self, tmp_path):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc.bump_type = "patch"
+        proc.dry_run = False
+        proc._trigger = "tag"
+        proc._source_sha = "f" * 40
+        proc._source_repo = "deepiri-gpu-utils"
+        proc._active_target_refs = {"deepiri-gpu-utils": "v0.2.0"}
+        proc._get_or_clone_repo = lambda repo_name: tmp_path
+        proc._create_pull_request = lambda repo_name, clone_path: "https://example.test/pr"
+
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("""
+[build-system]
+requires = ["setuptools>=68"]
+
+[project]
+name = "deepiri-ollama-utils"
+version = "0.2.0"
+dependencies = [
+  "httpx>=0.27",
+  "deepiri-gpu-utils @ git+https://github.com/Team-Deepiri/deepiri-gpu-utils.git@v0.1.0",
+]
+""")
+
+        result = proc._update_repo("deepiri-ollama-utils", "deepiri-gpu-utils", "v0.2.0")
+
+        assert result == "updated"
+        content = pyproject.read_text()
+        assert "@v0.2.0" in content
+        assert 'version = "0.2.1"' in content
+
+    def test_update_repo_uses_source_sha_for_pep621_rev_dependency(self, tmp_path):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc.bump_type = "patch"
+        proc.dry_run = False
+        proc._source_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        proc._source_repo = "deepiri-gpu-utils"
+        proc._trigger = "tag"
+        proc._active_target_refs = {"deepiri-gpu-utils": "v1.0.0"}
+        proc._get_or_clone_repo = lambda repo_name: tmp_path
+        proc._create_pull_request = lambda repo_name, clone_path: "https://example.test/pr"
+
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("""
+[project]
+name = "consumer"
+version = "0.1.0"
+dependencies = [
+  "deepiri-gpu-utils @ git+https://github.com/Team-Deepiri/deepiri-gpu-utils.git@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+]
+""")
+
+        result = proc._update_repo("consumer", "deepiri-gpu-utils", "v1.0.0")
+
+        assert result == "updated"
+        assert "@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" in pyproject.read_text()
+
+    def test_update_repo_skips_tag_pinned_pep621_on_push(self, tmp_path):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc.bump_type = "patch"
+        proc.dry_run = False
+        proc._trigger = "push"
+        proc._source_sha = "dddddddddddddddddddddddddddddddddddddddd"
+        proc._source_repo = "deepiri-gpu-utils"
+        proc._active_target_refs = {"deepiri-gpu-utils": proc._source_sha}
+        proc._get_or_clone_repo = lambda repo_name: tmp_path
+        proc._create_pull_request = lambda repo_name, clone_path: None
+
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("""
+[project]
+name = "consumer"
+version = "0.1.0"
+dependencies = [
+  "deepiri-gpu-utils @ git+https://github.com/Team-Deepiri/deepiri-gpu-utils.git@v0.1.0",
+]
+""")
+
+        result = proc._update_repo("consumer", "deepiri-gpu-utils", proc._source_sha)
+
+        assert result == "skipped"
+        assert "@v0.1.0" in pyproject.read_text()
+
+    def test_platform_submodule_uses_consumer_push_sha(self, tmp_path, monkeypatch):
+        from deepiri_cascade.parser.gitmodules import SubmoduleUpdateResult
+
+        gpu_sha = "d1f8e92d5ec38f9a839ac9bade04cd71edd219b1"
+        cyrex_sha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        helox_sha = "ffffffffffffffffffffffffffffffffffffffff"
+
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc.bump_type = "patch"
+        proc.dry_run = False
+        proc._trigger = "tag"
+        proc._source_repo = "deepiri-gpu-utils"
+        proc._source_sha = gpu_sha
+        proc._active_target_refs = {
+            "diri-cyrex": cyrex_sha,
+            "diri-helox": helox_sha,
+        }
+        proc._last_pushed_sha = None
+
+        platform = tmp_path / "platform"
+        platform.mkdir()
+        (platform / ".gitmodules").write_text("""
+[submodule "diri-cyrex"]
+    path = diri-cyrex
+    url = git@github.com:Team-Deepiri/diri-cyrex.git
+[submodule "diri-helox"]
+    path = diri-helox
+    url = git@github.com:Team-Deepiri/diri-helox.git
+""")
+
+        checkout_refs = []
+
+        def fake_update(repo_path, submodule_path, new_ref, git_config=None):
+            checkout_refs.append((submodule_path, new_ref))
+            return SubmoduleUpdateResult(True)
+
+        monkeypatch.setattr(
+            "deepiri_cascade.parser.gitmodules.update_submodule_ref_result",
+            fake_update,
+        )
+        proc._get_or_clone_repo = lambda repo_name: platform
+        proc._create_pull_request = lambda repo_name, clone_path: "https://example.test/pr"
+
+        result = proc._update_repo("deepiri-platform", "diri-cyrex", cyrex_sha)
+
+        assert result == "updated"
+        assert checkout_refs == [
+            ("diri-cyrex", cyrex_sha),
+            ("diri-helox", helox_sha),
+        ]
+        assert gpu_sha not in {ref for _, ref in checkout_refs}
+
+    def test_cascade_records_pushed_sha_for_downstream_submodules(self):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.verbose = False
+        proc._cascade_refs = {"deepiri-gpu-utils": "v0.2.0"}
+        proc._last_pushed_sha = "cccccccccccccccccccccccccccccccccccccccc"
+
+        proc._cascade_refs["diri-cyrex"] = proc._last_pushed_sha
+
+        assert proc._cascade_refs["diri-cyrex"] == "c" * 40
+        assert proc._cascade_refs["diri-cyrex"] != "d1f8e92d5ec38f9a839ac9bade04cd71edd219b1"
 
     def test_update_repo_fails_when_matching_submodule_update_fails(self, tmp_path, monkeypatch):
         proc = CascadeProcessor.__new__(CascadeProcessor)
@@ -436,6 +587,140 @@ class TestNpmAuthInjection:
         assert "save-exact=true" in content
         assert "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" in content
         assert "new-token" not in content
+
+
+class TestAutoMerge:
+    def test_ensure_repo_auto_merge_skips_when_already_enabled(self, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc.headers = {}
+        proc._get_repository = lambda repo: {"allow_auto_merge": True}
+
+        patch_calls = []
+        monkeypatch.setattr(
+            "deepiri_cascade.cascade.httpx.patch",
+            lambda *args, **kwargs: patch_calls.append((args, kwargs)),
+        )
+
+        assert proc._ensure_repo_auto_merge("consumer") is True
+        assert patch_calls == []
+
+    def test_ensure_repo_auto_merge_patches_repo_setting(self, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc.headers = {"Authorization": "Bearer test"}
+        proc._get_repository = lambda repo: {"allow_auto_merge": False}
+
+        class Response:
+            status_code = 200
+            text = ""
+
+        monkeypatch.setattr(
+            "deepiri_cascade.cascade.httpx.patch",
+            lambda url, **kwargs: Response(),
+        )
+
+        assert proc._ensure_repo_auto_merge("consumer") is True
+
+    def test_pick_merge_method_prefers_squash(self):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc._get_repository = lambda repo: {
+            "allow_squash_merge": True,
+            "allow_merge_commit": True,
+        }
+
+        assert proc._pick_merge_method("consumer") == "SQUASH"
+
+    def test_schedule_pull_request_auto_merge_enables_repo_and_pr(self, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        calls = []
+        proc._ensure_repo_auto_merge = lambda repo: calls.append(("repo", repo)) or True
+        proc._pick_merge_method = lambda repo: "SQUASH"
+        proc._enable_auto_merge = lambda node_id, merge_method: (
+            calls.append(("merge", node_id, merge_method)) or True
+        )
+
+        proc._schedule_pull_request_auto_merge(
+            "consumer",
+            {"node_id": "PR_123", "number": 42},
+        )
+
+        assert calls == [
+            ("repo", "consumer"),
+            ("merge", "PR_123", "SQUASH"),
+        ]
+
+    def test_enable_auto_merge_logs_graphql_error(self, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.headers = {}
+
+        class Response:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"errors": [{"message": "Auto merge is not allowed for this repository"}]}
+
+        monkeypatch.setattr(
+            "deepiri_cascade.cascade.httpx.post",
+            lambda *args, **kwargs: Response(),
+        )
+
+        assert proc._enable_auto_merge("PR_123", "MERGE") is False
+
+
+class TestPoetryLockRegeneration:
+    def test_regenerate_poetry_lock_updates_changed_package_only(self, tmp_path, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.token = "secret-token"
+        calls = []
+
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return Result()
+
+        def fake_configure_git_auth(path):
+            calls.append(("configure_git_auth", path))
+
+        monkeypatch.setattr("deepiri_cascade.cascade.subprocess.run", fake_run)
+        proc._configure_git_auth = fake_configure_git_auth
+        proc._poetry_command = lambda: ["poetry"]
+
+        assert proc._regenerate_poetry_lock(tmp_path, "deepiri-gpu-utils") is True
+
+        assert calls[0] == ("configure_git_auth", tmp_path)
+        assert calls[1][0] == [
+            "poetry",
+            "update",
+            "--lock",
+            "--no-interaction",
+            "deepiri-gpu-utils",
+        ]
+        assert calls[1][1]["cwd"] == tmp_path
+
+    def test_regenerate_poetry_lock_returns_false_on_failure(self, tmp_path, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.token = "secret-token"
+
+        class Result:
+            returncode = 1
+            stdout = ""
+            stderr = "git clone failed"
+
+        monkeypatch.setattr(
+            "deepiri_cascade.cascade.subprocess.run",
+            lambda *args, **kwargs: Result(),
+        )
+        proc._configure_git_auth = lambda path: None
+        proc._poetry_command = lambda: ["poetry"]
+
+        assert proc._regenerate_poetry_lock(tmp_path, "deepiri-gpu-utils") is False
 
 
 class TestNpmLockRegeneration:

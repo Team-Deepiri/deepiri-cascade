@@ -143,7 +143,7 @@ See **[docs/SECRETS.md](docs/SECRETS.md)** for the full setup checklist.
 | `GITHUB_APP_ID` | Same App ID as above |
 | `GITHUB_APP_PRIVATE_KEY` | Same PEM as `APP_PRIVATE_KEY` |
 
-After merging to `main`, `deploy.yml` publishes the worker automatically when `worker/` changes.
+After merging to `main`, `deploy.yml` publishes the worker automatically once CI passes.
 
 ## Full Setup Guide
 

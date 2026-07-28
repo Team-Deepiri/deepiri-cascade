@@ -34,6 +34,20 @@ def _is_skipped(path: Path, root: Path) -> bool:
     return any(part in SKIP_DIRS for part in relative.parts)
 
 
+def _pyproject_kind(path: Path) -> str:
+    try:
+        content = path.read_text()
+    except OSError:
+        return "poetry"
+    if "[tool.poetry.dependencies]" in content:
+        return "poetry"
+    if "[tool.poetry]" in content and "[project]" not in content:
+        return "poetry"
+    if "[project]" in content:
+        return "pep621"
+    return "poetry"
+
+
 def iter_package_manifests(root: Path) -> Iterable[PackageManifest]:
     """Yield package manifests in root and nested package directories."""
     root = root.resolve()
@@ -43,6 +57,6 @@ def iter_package_manifests(root: Path) -> Iterable[PackageManifest]:
         if path.name == "package.json":
             yield PackageManifest("npm", path, path.parent)
         elif path.name == "pyproject.toml":
-            yield PackageManifest("poetry", path, path.parent)
+            yield PackageManifest(_pyproject_kind(path), path, path.parent)
         elif path.name == ".gitmodules":
             yield PackageManifest("gitmodules", path, path.parent)

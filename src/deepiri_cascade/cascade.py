@@ -12,7 +12,7 @@ from rich.table import Table
 
 from .ci_logging import compute_dependency_waves
 from .manifest import iter_package_manifests
-from .parser import npm, poetry, gitmodules
+from .parser import npm, poetry, pep508, gitmodules
 from .triggers import TriggerType, branch_name_suffix, display_ref, is_commit_sha
 
 console = Console()
@@ -43,6 +43,7 @@ class CascadeProcessor:
         self._active_target_refs: Dict[str, str] = {}
         self._last_bumped_version: Optional[str] = None
         self._last_primary_upstream: Optional[str] = None
+        self._last_pushed_sha: Optional[str] = None
 
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.headers = {
@@ -131,9 +132,14 @@ class CascadeProcessor:
                 status = self._update_repo(repo, primary_repo, primary_ref)
                 if status == "updated":
                     results["updated"].append(repo)
-                    propagated = self._propagated_ref_for_repo(repo)
-                    if propagated:
-                        self._cascade_refs[repo] = propagated
+                    pushed_sha = getattr(self, "_last_pushed_sha", None)
+                    if pushed_sha:
+                        self._cascade_refs[repo] = pushed_sha
+                        if self.verbose:
+                            console.print(
+                                f"    [dim]Recorded {repo}@{self._last_pushed_sha[:8]} "
+                                f"for downstream submodule updates[/dim]"
+                            )
                 elif status == "skipped":
                     results["skipped"].append(repo)
                 else:
@@ -162,6 +168,7 @@ class CascadeProcessor:
         """Update a single dependent repo."""
         console.print(f"  Updating {repo_name}...")
         self._last_bumped_version = None
+        self._last_pushed_sha = None
         target_refs = getattr(self, "_active_target_refs", None) or {source_repo: source_tag}
 
         if self.dry_run:
@@ -220,7 +227,39 @@ class CascadeProcessor:
                                 console.print(f"    [green]Updated {manifest.path.relative_to(clone_path)}[/green]")
                                 bumped = poetry.bump_pyproject_version(manifest.path, self.bump_type)
                                 self._remember_bumped_version(bumped)
-                                self._regenerate_poetry_lock(manifest.project_dir)
+                                if self._regenerate_poetry_lock(
+                                    manifest.project_dir, dep_name
+                                ):
+                                    updated = True
+                                else:
+                                    update_failed = True
+
+                elif manifest.kind == "pep621":
+                    deps = pep508.parse_project_dependencies(manifest.path)
+                    for dep_name, dep_repo in deps.items():
+                        if dep_repo in target_refs:
+                            matched_dependency = True
+                            ref_key = pep508.get_dependency_ref_key(manifest.path, dep_name)
+                            target_ref = target_refs[dep_repo]
+                            update_ref = pep508.resolve_pep508_pin(
+                                ref_key,
+                                self._trigger,
+                                target_ref,
+                                dep_repo=dep_repo,
+                                source_repo=self._source_repo,
+                                source_sha=self._source_sha,
+                                resolve_tag_sha=self._get_tag_sha,
+                            )
+                            if update_ref is None:
+                                continue
+                            if pep508.update_project_dependency(
+                                manifest.path,
+                                dep_name,
+                                update_ref,
+                            ):
+                                console.print(f"    [green]Updated {manifest.path.relative_to(clone_path)}[/green]")
+                                bumped = poetry.bump_pyproject_version(manifest.path, self.bump_type)
+                                self._remember_bumped_version(bumped)
                                 updated = True
 
                 elif manifest.kind == "gitmodules":
@@ -357,13 +396,6 @@ class CascadeProcessor:
 
         return ref
 
-    def _propagated_ref_for_repo(self, repo_name: str) -> Optional[str]:
-        """Ref downstream repos should use when depending on a just-updated consumer."""
-        primary = getattr(self, "_last_primary_upstream", None)
-        if not primary or primary not in self._active_target_refs:
-            return None
-        return self._resolve_update_ref(primary, self._active_target_refs[primary])
-
     def _get_default_branch_sha(self, repo_name: str) -> Optional[str]:
         branch = self._get_default_branch(repo_name)
         url = f"https://api.github.com/repos/{self.org}/{repo_name}/commits/{branch}"
@@ -440,6 +472,18 @@ class CascadeProcessor:
                 console.print(f"    [red]git push failed: {push.stderr[:200]}[/red]")
                 return None
 
+            rev = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=clone_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if rev.returncode != 0:
+                console.print(f"    [red]git rev-parse failed: {rev.stderr[:200]}[/red]")
+                return None
+
+            self._last_pushed_sha = rev.stdout.strip()
             return branch_name
 
         except Exception as e:
@@ -470,7 +514,7 @@ This PR updates the dependency on `{self._source_repo}` to `{display}`.
 - Regenerated lock files
 - Bumped {self.bump_type} version
 
-Please review and merge. Auto-merge will be enabled once CI checks pass.
+Auto-merge is enabled when required CI checks pass.
 """
 
         url = f"https://api.github.com/repos/{self.org}/{repo_name}/pulls"
@@ -487,17 +531,14 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
             if response.status_code == 201:
                 pr_data = response.json()
                 pr_url = pr_data.get("html_url")
-                pr_node_id = pr_data.get("node_id")
-                
-                if pr_node_id:
-                    self._enable_auto_merge(pr_node_id)
-                
+                self._schedule_pull_request_auto_merge(repo_name, pr_data)
                 return pr_url
             if response.status_code == 422 and "pull request already exists" in response.text.lower():
                 existing_pr = self._find_existing_pull_request(repo_name, branch_name)
                 if existing_pr:
-                    console.print(f"    [yellow]PR already exists: {existing_pr}[/yellow]")
-                    return existing_pr
+                    console.print(f"    [yellow]PR already exists: {existing_pr.get('html_url')}[/yellow]")
+                    self._schedule_pull_request_auto_merge(repo_name, existing_pr)
+                    return existing_pr.get("html_url")
                 console.print(f"    [yellow]PR already exists but could not resolve URL[/yellow]")
                 return None
             else:
@@ -508,7 +549,9 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
             console.print(f"    [red]PR creation error: {e}[/red]")
             return None
 
-    def _find_existing_pull_request(self, repo_name: str, branch_name: str) -> Optional[str]:
+    def _find_existing_pull_request(
+        self, repo_name: str, branch_name: str
+    ) -> Optional[dict]:
         """Find an open PR for a previously pushed cascade branch."""
         url = f"https://api.github.com/repos/{self.org}/{repo_name}/pulls"
         params = {
@@ -520,33 +563,114 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
             if response.status_code == 200:
                 prs = response.json()
                 if prs:
-                    return prs[0].get("html_url")
+                    return prs[0]
         except Exception:
             pass
         return None
 
-    def _enable_auto_merge(self, pull_request_id: str) -> bool:
+    def _get_repository(self, repo_name: str) -> dict:
+        """Fetch repository metadata from GitHub."""
+        url = f"https://api.github.com/repos/{self.org}/{repo_name}"
+        try:
+            response = httpx.get(url, headers=self.headers, timeout=10)
+            if response.status_code == 200:
+                return response.json()
+        except Exception:
+            pass
+        return {}
+
+    def _ensure_repo_auto_merge(self, repo_name: str) -> bool:
+        """Turn on allow_auto_merge for consumer repos when the App has admin access."""
+        repo = self._get_repository(repo_name)
+        if repo.get("allow_auto_merge"):
+            return True
+
+        url = f"https://api.github.com/repos/{self.org}/{repo_name}"
+        try:
+            response = httpx.patch(
+                url,
+                json={"allow_auto_merge": True},
+                headers=self.headers,
+                timeout=30,
+            )
+            if response.status_code == 200:
+                console.print(f"    [green]Enabled allow_auto_merge on {repo_name}[/green]")
+                return True
+            detail = response.text[:200]
+            console.print(
+                f"    [yellow]Could not enable allow_auto_merge on {repo_name}: "
+                f"{response.status_code} {detail}[/yellow]"
+            )
+        except Exception as e:
+            console.print(f"    [yellow]allow_auto_merge error: {e}[/yellow]")
+        return False
+
+    def _pick_merge_method(self, repo_name: str) -> str:
+        """Pick a merge method supported by the target repository."""
+        repo = self._get_repository(repo_name)
+        if repo.get("allow_squash_merge"):
+            return "SQUASH"
+        if repo.get("allow_merge_commit"):
+            return "MERGE"
+        if repo.get("allow_rebase_merge"):
+            return "REBASE"
+        return "MERGE"
+
+    def _schedule_pull_request_auto_merge(self, repo_name: str, pr: dict) -> None:
+        """Queue a PR to merge automatically once required checks pass."""
+        pr_node_id = pr.get("node_id")
+        pr_number = pr.get("number")
+        if not pr_node_id and pr_number:
+            pr_node_id = self._get_pull_request_node_id(repo_name, pr_number)
+        if not pr_node_id:
+            console.print("    [yellow]Could not resolve PR node id for auto-merge[/yellow]")
+            return
+
+        self._ensure_repo_auto_merge(repo_name)
+        merge_method = self._pick_merge_method(repo_name)
+        self._enable_auto_merge(pr_node_id, merge_method)
+
+    def _get_pull_request_node_id(self, repo_name: str, pr_number: int) -> Optional[str]:
+        """Look up a pull request GraphQL node id."""
+        url = f"https://api.github.com/repos/{self.org}/{repo_name}/pulls/{pr_number}"
+        try:
+            response = httpx.get(url, headers=self.headers, timeout=30)
+            if response.status_code == 200:
+                return response.json().get("node_id")
+        except Exception:
+            pass
+        return None
+
+    def _enable_auto_merge(self, pull_request_id: str, merge_method: str = "MERGE") -> bool:
         """Enable auto-merge on a pull request."""
+        if merge_method not in {"MERGE", "SQUASH", "REBASE"}:
+            merge_method = "MERGE"
+
         url = "https://api.github.com/graphql"
         payload = {
-            "query": """
-            mutation EnableAutoMerge($pullRequestId: ID!) {
-              enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId, mergeMethod: MERGE}) {
-                pullRequest { number }
-              }
-            }
+            "query": f"""
+            mutation EnableAutoMerge($pullRequestId: ID!) {{
+              enablePullRequestAutoMerge(
+                input: {{pullRequestId: $pullRequestId, mergeMethod: {merge_method}}}
+              ) {{
+                pullRequest {{ number autoMergeRequest {{ enabledAt }} }}
+              }}
+            }}
             """,
             "variables": {"pullRequestId": pull_request_id},
         }
 
         try:
             response = httpx.post(url, json=payload, headers=self.headers, timeout=30)
-            if response.status_code == 200 and not response.json().get("errors"):
-                console.print(f"    [green]Auto-merge enabled[/green]")
+            data = response.json()
+            errors = data.get("errors")
+            if response.status_code == 200 and not errors:
+                console.print(f"    [green]Auto-merge enabled ({merge_method.lower()})[/green]")
                 return True
-            else:
-                console.print(f"    [yellow]Auto-merge enable failed: {response.status_code}[/yellow]")
-                return False
+
+            message = errors[0].get("message") if errors else response.text[:200]
+            console.print(f"    [yellow]Auto-merge enable failed: {message}[/yellow]")
+            return False
         except Exception as e:
             console.print(f"    [yellow]Auto-merge error: {e}[/yellow]")
             return False
@@ -643,22 +767,32 @@ Please review and merge. Auto-merge will be enabled once CI checks pass.
             return ["poetry"]
         return [sys.executable, "-m", "poetry"]
 
-    def _regenerate_poetry_lock(self, clone_path: Path):
-        """Regenerate poetry.lock."""
+    def _regenerate_poetry_lock(self, clone_path: Path, package_name: str) -> bool:
+        """Refresh poetry.lock for a dependency whose pin changed in pyproject.toml."""
+        self._configure_git_auth(clone_path)
         try:
             result = subprocess.run(
-                [*self._poetry_command(), "lock", "--no-update"],
+                [
+                    *self._poetry_command(),
+                    "update",
+                    "--lock",
+                    "--no-interaction",
+                    package_name,
+                ],
                 cwd=clone_path,
                 capture_output=True,
                 text=True,
                 timeout=180,
             )
             if result.returncode == 0:
-                console.print(f"    [green]Regenerated poetry.lock[/green]")
-            else:
-                console.print(f"    [yellow]poetry lock warning: {result.stderr[:200]}[/yellow]")
+                console.print(f"    [green]Regenerated poetry.lock ({package_name})[/green]")
+                return True
+            detail = (result.stderr or result.stdout or "unknown error")[:300]
+            console.print(f"    [red]poetry update --lock failed: {detail}[/red]")
+            return False
         except Exception as e:
-            console.print(f"    [yellow]poetry lock error: {e}[/yellow]")
+            console.print(f"    [red]poetry update --lock error: {e}[/red]")
+            return False
 
     def _ensure_git_identity(self, path: Path):
         """Set a local git identity when Actions did not provide one."""

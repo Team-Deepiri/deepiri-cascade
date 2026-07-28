@@ -18,7 +18,7 @@ Settings path: **Settings → Secrets and variables → Actions**
 | **Tag Monitor** (`monitor.yml`) | Cron every 5 min | `GITHUB_TOKEN` (automatic) | Polls org tags → dispatches cascade |
 | **Push Monitor** (`monitor-push.yml`) | Cron every 5 min | `GITHUB_TOKEN` (automatic) | Polls default-branch HEAD → dispatches cascade |
 | **Cascade Update** (`cascade.yml`) | Dispatch / manual | `APP_ID`, `APP_PRIVATE_KEY` | **Blocked until App secrets are set** |
-| **Deploy Worker** (`deploy.yml`) | Push to `main` (`worker/`) | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | **Blocked until Cloudflare secrets are set** |
+| **Deploy Worker** (`deploy.yml`) | After CI passes on `main` | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | **Blocked until Cloudflare secrets are set** |
 
 **Summary:** CI and monitors work today with zero manual secrets. Cascade PR creation and worker deploy only need the four Actions secrets below (+ two Worker secrets via Wrangler). No other configuration is required.
 
@@ -31,7 +31,7 @@ Add these four secrets in the **deepiri-cascade** repository.
 | Secret | Used by | Value |
 |--------|---------|-------|
 | `APP_ID` | `cascade.yml`, `reusable.yml` | Numeric ID of the `deepiri-cascade` GitHub App |
-| `APP_PRIVATE_KEY` | `cascade.yml`, `reusable.yml` | Full contents of the App `.pem` file (include `-----BEGIN/END RSA PRIVATE KEY-----` lines) |
+| `APP_PRIVATE_KEY` | `cascade.yml`, `reusable.yml` | Full contents of the App `.pem` file (include `-----BEGIN ... PRIVATE KEY-----` and `-----END ... PRIVATE KEY-----` lines, with real newlines — not literal `\n`). If cascade logs `APP_PRIVATE_KEY does not look like a PEM`, re-download the key from the GitHub App settings and replace this secret. |
 | `CLOUDFLARE_API_TOKEN` | `deploy.yml` | Cloudflare API token with permission to deploy Workers |
 | `CLOUDFLARE_ACCOUNT_ID` | `deploy.yml` | Cloudflare account ID (Wrangler / dashboard) |
 
@@ -40,7 +40,7 @@ Add these four secrets in the **deepiri-cascade** repository.
 | Workflow | Secrets |
 |----------|---------|
 | `cascade.yml` | `APP_ID`, `APP_PRIVATE_KEY` → mints an installation token to clone repos, bump deps, and open PRs |
-| `deploy.yml` | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` → runs `wrangler deploy` when `worker/` changes on `main` |
+| `deploy.yml` | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` → runs `wrangler deploy` after CI passes on `main` |
 | `monitor.yml` | *(none — uses built-in `GITHUB_TOKEN`)* |
 | `monitor-push.yml` | *(none — uses built-in `GITHUB_TOKEN`)* |
 
@@ -75,7 +75,7 @@ wrangler deploy
 
 The worker receives GitHub App webhooks (tag create + default-branch push) and dispatches `cascade-trigger` to `deepiri-cascade`.
 
-After merging worker changes to `main`, `deploy.yml` redeploys automatically when the four Actions secrets above are set.
+After merging to `main`, `deploy.yml` publishes the worker automatically once CI passes (when the four Actions secrets above are set).
 
 ---
 
@@ -89,9 +89,10 @@ Create or verify the App at **GitHub → Developer settings → GitHub Apps → 
 |------------|-------|
 | Repository contents | Read and write |
 | Pull requests | Read and write |
+| Administration | Read and write |
 | Metadata | Read |
 
-Contents write is required so cascade can push branches and open PRs in consumer repos.
+Contents write is required so cascade can push branches and open PRs in consumer repos. Administration write lets cascade turn on **Allow auto-merge** on consumer repos so dependency PRs merge automatically once CI passes.
 
 ### Subscribed events
 
@@ -127,7 +128,7 @@ Cascade writes `.npmrc` with `//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN
 
 @Team-Deepiri/it-management-team
 
-- [ ] GitHub App created with permissions and events above
+- [ ] GitHub App created with permissions and events above (include **Administration: Read and write** for auto-merge)
 - [ ] App installed on **Team-Deepiri**
 - [ ] Actions secrets: `APP_ID`, `APP_PRIVATE_KEY`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`
 - [ ] Worker secrets: `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`
@@ -140,10 +141,50 @@ Cascade writes `.npmrc` with `//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN
 2. **Push trigger** — merge to `main` on a platform service. Expect a submodule pointer PR in `deepiri-platform` (or run `monitor-push.yml` manually).
 3. **Manual** — Actions → **Cascade Update** → **Run workflow** with `repo`, `tag` or `sha`, and `trigger`.
 
+### Auto-merge
+
+Cascade enables **Allow auto-merge** on each consumer repo (when the App has **Administration: write**) and queues the PR via `enablePullRequestAutoMerge`. GitHub merges once required status checks pass.
+
+If a repo still requires human review (`required_approving_review_count > 0`), auto-merge waits until someone approves. To fully automate dependency bumps, add the `deepiri-cascade` GitHub App to the branch protection **bypass** list for those repos.
+
+---
+
+## Troubleshooting — `Invalid keyData` in Cascade Update
+
+If **Generate App token** fails with `Invalid keyData` / `header too long`:
+
+1. **Action runtime** — cascade mints tokens with `scripts/mint_github_app_token.py` (PyJWT + cryptography), avoiding Node 24 `Invalid keyData` issues from `actions/create-github-app-token@v1`.
+2. **App ID** — `APP_ID` must be the numeric GitHub App ID for the same App as the PEM (not empty, not a Client ID from the wrong field).
+3. **Private key** — paste the **entire** downloaded `.pem` into `APP_PRIVATE_KEY`. PKCS#1 (`BEGIN RSA PRIVATE KEY`) is auto-converted in CI; PKCS#8 (`BEGIN PRIVATE KEY`) is preferred.
+4. **Matching pair** — App ID and private key must belong to the same GitHub App installation on **Team-Deepiri**.
+
 ---
 
 ## Rotating credentials
 
-@Team-Deepiri/it-management-team — use this when rotating App keys or responding to a leaked token.
+@Team-Deepiri/it-management-team — **action required now (2026-07-03):** Cascade Update is failing because `APP_PRIVATE_KEY` in this repo is not a valid GitHub App PEM. Rotate/replace the secret before the next tag cascade.
+
+### Rotate `APP_PRIVATE_KEY` now
+
+1. Open **GitHub → Organization settings → GitHub Apps → `deepiri-cascade`**  
+   (`https://github.com/organizations/team-deepiri/settings/apps/deepiri-cascade`)
+2. Under **Private keys**, click **Generate a private key** and download the `.pem`.
+3. In **Team-Deepiri/deepiri-cascade → Settings → Secrets and variables → Actions**, update:
+   - `APP_PRIVATE_KEY` — paste the **entire** `.pem` (include `-----BEGIN ... PRIVATE KEY-----` / `-----END ... PRIVATE KEY-----`, real newlines)
+   - `APP_ID` — confirm it is the **numeric App ID** for that same App (unchanged unless the App was recreated)
+4. Update the Cloudflare Worker secrets to match (same PEM + App ID):
+   ```bash
+   cd worker
+   wrangler secret put GITHUB_APP_ID
+   wrangler secret put GITHUB_APP_PRIVATE_KEY
+   ```
+5. Revoke the old App private key in GitHub App settings after the new secret works.
+6. Smoke test: **Actions → Cascade Update → Run workflow** with `repo=deepiri-training-orchestrator`, `tag=v0.4.1`, `trigger=tag`.
+
+If the workflow still fails, check the **Generate App token** step — `scripts/mint_github_app_token.py` prints whether the PEM is invalid or the App ID/key pair mismatches.
+
+---
+
+@Team-Deepiri/it-management-team — use the section below when rotating App keys routinely or responding to a leaked token.
 
 To rotate the App private key, update **both** Actions secrets (`APP_PRIVATE_KEY`) and Worker secrets (`GITHUB_APP_PRIVATE_KEY`), then revoke the old key in the App settings. Full steps: [IT_SECRETS_RUNBOOK.md](./IT_SECRETS_RUNBOOK.md#2-rotate-the-deepiri-cascade-github-app-credentials).

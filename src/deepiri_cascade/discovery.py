@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import tempfile
 
-from .parser import npm, poetry, gitmodules
+from .parser import npm, poetry, pep508, gitmodules
 from .parser.npm import parse_package_lock_json
 from .parser.poetry import parse_poetry_lock
 
@@ -185,8 +185,10 @@ class Discovery:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
             f.write(content)
             f.flush()
-            parsed = poetry.parse_pyproject_toml(Path(f.name))
-            for name, dep_repo in parsed.items():
+            path = Path(f.name)
+            for name, dep_repo in poetry.parse_pyproject_toml(path).items():
+                deps[name] = dep_repo
+            for name, dep_repo in pep508.parse_project_dependencies(path).items():
                 deps[name] = dep_repo
 
     def _merge_poetry_lock_deps(self, content: str, deps: Dict[str, str]) -> None:
@@ -226,14 +228,7 @@ class Discovery:
 
         pyproject_toml = self.fetch_file_content(repo_name, "pyproject.toml")
         if pyproject_toml:
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
-                f.write(pyproject_toml)
-                f.flush()
-                parsed = poetry.parse_pyproject_toml(Path(f.name))
-                # is_internal_dep is npm-centric; pyproject.toml git URLs are
-                # already filtered to team-deepiri by the parser regex.
-                for name, dep_repo in parsed.items():
-                    deps[name] = dep_repo
+            self._merge_pyproject_deps(pyproject_toml, deps)
 
         poetry_lock = self.fetch_file_content(repo_name, "poetry.lock")
         if poetry_lock:

@@ -16,18 +16,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Generate App token
-        id: app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: team-deepiri
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Generate App token
+        id: app-token
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          GITHUB_APP_OWNER: team-deepiri
+        run: |
+          python -m pip install --quiet PyJWT cryptography httpx
+          python scripts/mint_github_app_token.py
 
       - name: Install dependencies
         run: |
