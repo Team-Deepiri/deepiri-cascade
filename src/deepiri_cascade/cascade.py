@@ -533,7 +533,7 @@ Auto-merge is enabled when required CI checks pass.
                 pr_url = pr_data.get("html_url")
                 self._schedule_pull_request_auto_merge(repo_name, pr_data)
                 self._close_superseded_pull_requests(
-                    repo_name, branch_name, self._source_repo or ""
+                    repo_name, branch_name, self._source_repo or "", superseding_url=pr_url or ""
                 )
                 return pr_url
             if response.status_code == 422 and "pull request already exists" in response.text.lower():
@@ -542,7 +542,10 @@ Auto-merge is enabled when required CI checks pass.
                     console.print(f"    [yellow]PR already exists: {existing_pr.get('html_url')}[/yellow]")
                     self._schedule_pull_request_auto_merge(repo_name, existing_pr)
                     self._close_superseded_pull_requests(
-                        repo_name, branch_name, self._source_repo or ""
+                        repo_name,
+                        branch_name,
+                        self._source_repo or "",
+                        superseding_url=existing_pr.get("html_url") or "",
                     )
                     return existing_pr.get("html_url")
                 console.print(f"    [yellow]PR already exists but could not resolve URL[/yellow]")
@@ -556,7 +559,11 @@ Auto-merge is enabled when required CI checks pass.
             return None
 
     def _close_superseded_pull_requests(
-        self, repo_name: str, keep_branch: str, source_repo: str
+        self,
+        repo_name: str,
+        keep_branch: str,
+        source_repo: str,
+        superseding_url: str = "",
     ) -> None:
         """Close open cascade PRs for a dependency that the new bump supersedes.
 
@@ -564,27 +571,44 @@ Auto-merge is enabled when required CI checks pass.
         to 1.3.0 and then later to 1.3.1), the older cascade PR is stale and
         should be closed in favor of the newly created one. Only cascade PRs
         that target the same ``source_repo`` are considered, the current branch
-        is kept, and any other matching open PR is closed with a note.
+        is kept, and any other matching open PR is closed with a note pointing
+        at the newer ``superseding_url``.
         """
         if not source_repo:
             return
 
         title_prefix = f"deps: update {source_repo}"
         url = f"https://api.github.com/repos/{self.org}/{repo_name}/pulls"
+        params = {"state": "open", "per_page": 100}
         try:
             response = httpx.get(
                 url,
-                params={"state": "open", "per_page": 100},
+                params=params,
                 headers=self.headers,
                 timeout=30,
             )
-            if response.status_code != 200:
-                return
+
+            all_prs = []
+            while True:
+                if response.status_code != 200:
+                    return
+                all_prs.extend(response.json())
+                link = response.headers.get("Link", "")
+                if 'rel="next"' not in link:
+                    break
+                next_url = None
+                for part in link.split(","):
+                    section = part.split(";")
+                    if len(section) == 2 and 'rel="next"' in section[1]:
+                        next_url = section[0].strip().strip("<>")
+                if not next_url:
+                    break
+                response = httpx.get(next_url, headers=self.headers, timeout=30)
         except Exception as e:
             console.print(f"    [yellow]Supersede scan error: {e}[/yellow]")
             return
 
-        for pr in response.json():
+        for pr in all_prs:
             head = (pr.get("head") or {}).get("ref", "")
             title = pr.get("title") or ""
             number = pr.get("number")
@@ -597,7 +621,7 @@ Auto-merge is enabled when required CI checks pass.
             if not title.startswith(title_prefix):
                 continue
             self._close_pull_request(
-                repo_name, number, title, superseding_url=pr.get("html_url") or ""
+                repo_name, number, title, superseding_url=superseding_url
             )
 
     def _close_pull_request(self, repo_name: str, number: int, title: str, superseding_url: str = "") -> None:
@@ -605,7 +629,7 @@ Auto-merge is enabled when required CI checks pass.
         close_url = f"https://api.github.com/repos/{self.org}/{repo_name}/pulls/{number}"
         try:
             response = httpx.patch(close_url, json={"state": "closed"}, headers=self.headers, timeout=30)
-            if response.status_code == 200:
+            if response.status_code in (200, 202):
                 console.print(f"    [yellow]Closed superseded PR #{number} ({title})[/yellow]")
                 if superseding_url:
                     body = (

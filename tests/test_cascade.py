@@ -763,6 +763,7 @@ class TestCloseSupersededPullRequests:
 
         class Resp:
             status_code = 200
+            headers = {}
 
             @staticmethod
             def json():
@@ -790,13 +791,18 @@ class TestCloseSupersededPullRequests:
         monkeypatch.setattr(
             "deepiri_cascade.cascade.httpx.get", lambda *a, **k: Resp()
         )
-        proc._close_pull_request = lambda *a, **k: proc.closed.append(a[1])
-
-        proc._close_superseded_pull_requests(
-            "consumer", "deepiri-cascade/consumer/deps/keep22222", "deepiri-helox"
+        proc._close_pull_request = lambda *a, **k: proc.closed.append(
+            (a[1], k.get("superseding_url", ""))
         )
 
-        assert proc.closed == [11]
+        proc._close_superseded_pull_requests(
+            "consumer",
+            "deepiri-cascade/consumer/deps/keep22222",
+            "deepiri-helox",
+            superseding_url="https://github.com/newpr/252",
+        )
+
+        assert proc.closed == [(11, "https://github.com/newpr/252")]
 
     def test_skips_non_cascade_str(self, monkeypatch):
         proc = CascadeProcessor.__new__(CascadeProcessor)
@@ -806,6 +812,7 @@ class TestCloseSupersededPullRequests:
 
         class Resp:
             status_code = 200
+            headers = {}
 
             @staticmethod
             def json():
@@ -863,3 +870,71 @@ class TestCloseSupersededPullRequests:
         assert patch_calls[0][1]["json"] == {"state": "closed"}
         assert "issues/11/comments" in post_calls[0][0]
         assert "superseded by the newer dependency bump" in post_calls[0][1]["json"]["body"]
+
+    def test_superseded_scan_paginates_through_link_header(self, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc.headers = {}
+        proc.closed = []
+
+        page1 = type("P1", (), {"status_code": 200, "headers": {
+            "Link": '<https://api.github.com/repos/x/pulls?per_page=100&page=2>; rel="next"'
+        }})()
+        page1.json = lambda: [
+            {
+                "number": 21,
+                "head": {"ref": "deepiri-cascade/consumer/deps/old11111"},
+                "title": "deps: update deepiri-helox → v1.0.0",
+                "html_url": "url/21",
+            }
+        ]
+        page2 = type("P2", (), {"status_code": 200, "headers": {}})()
+        page2.json = lambda: [
+            {
+                "number": 22,
+                "head": {"ref": "deepiri-cascade/consumer/deps/old22222"},
+                "title": "deps: update deepiri-helox → v1.1.0",
+                "html_url": "url/22",
+            }
+        ]
+
+        calls = {"n": 0}
+
+        def fake_get(url, **kw):
+            calls["n"] += 1
+            return page1 if calls["n"] == 1 else page2
+
+        monkeypatch.setattr("deepiri_cascade.cascade.httpx.get", fake_get)
+        proc._close_pull_request = lambda *a, **k: proc.closed.append(a[1])
+
+        proc._close_superseded_pull_requests(
+            "consumer", "deepiri-cascade/consumer/deps/keep33333", "deepiri-helox"
+        )
+
+        assert calls["n"] == 2
+        assert sorted(proc.closed) == [21, 22]
+
+    def test_close_pull_request_accepts_202_as_success(self, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc.headers = {}
+        patch_calls = []
+
+        class PatchResp:
+            status_code = 202
+
+        monkeypatch.setattr(
+            "deepiri_cascade.cascade.httpx.patch",
+            lambda url, **kw: patch_calls.append(url) or PatchResp(),
+        )
+        monkeypatch.setattr(
+            "deepiri_cascade.cascade.httpx.post",
+            lambda url, **kw: None,
+        )
+
+        proc._close_pull_request(
+            "consumer", 9, "deps: update deepiri-helox → v1.0.0",
+            superseding_url="https://github.com/x",
+        )
+
+        assert patch_calls[0].endswith("/pulls/9")
