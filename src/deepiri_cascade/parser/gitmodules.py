@@ -36,7 +36,7 @@ def parse_gitmodules(path: Path, org: str = "team-deepiri") -> dict:
         if url_match:
             url = url_match.group(1).strip()
             repo_match = re.search(
-                rf'{re.escape(org.lower())}[/:]([^/]+?)(?:\.git)?$',
+                rf'{re.escape(org)}[/:]([^/]+?)(?:\.git)?$',
                 url,
                 re.IGNORECASE,
             )

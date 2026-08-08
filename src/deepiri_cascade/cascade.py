@@ -256,6 +256,7 @@ class CascadeProcessor:
                                 manifest.path,
                                 dep_name,
                                 update_ref,
+                                self.org,
                             ):
                                 console.print(f"    [green]Updated {manifest.path.relative_to(clone_path)}[/green]")
                                 bumped = poetry.bump_pyproject_version(manifest.path, self.bump_type)
