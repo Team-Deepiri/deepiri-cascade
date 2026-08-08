@@ -532,12 +532,18 @@ Auto-merge is enabled when required CI checks pass.
                 pr_data = response.json()
                 pr_url = pr_data.get("html_url")
                 self._schedule_pull_request_auto_merge(repo_name, pr_data)
+                self._close_superseded_pull_requests(
+                    repo_name, branch_name, self._source_repo or ""
+                )
                 return pr_url
             if response.status_code == 422 and "pull request already exists" in response.text.lower():
                 existing_pr = self._find_existing_pull_request(repo_name, branch_name)
                 if existing_pr:
                     console.print(f"    [yellow]PR already exists: {existing_pr.get('html_url')}[/yellow]")
                     self._schedule_pull_request_auto_merge(repo_name, existing_pr)
+                    self._close_superseded_pull_requests(
+                        repo_name, branch_name, self._source_repo or ""
+                    )
                     return existing_pr.get("html_url")
                 console.print(f"    [yellow]PR already exists but could not resolve URL[/yellow]")
                 return None
@@ -548,6 +554,74 @@ Auto-merge is enabled when required CI checks pass.
         except Exception as e:
             console.print(f"    [red]PR creation error: {e}[/red]")
             return None
+
+    def _close_superseded_pull_requests(
+        self, repo_name: str, keep_branch: str, source_repo: str
+    ) -> None:
+        """Close open cascade PRs for a dependency that the new bump supersedes.
+
+        When the same source dependency is released again (e.g. bumping helox
+        to 1.3.0 and then later to 1.3.1), the older cascade PR is stale and
+        should be closed in favor of the newly created one. Only cascade PRs
+        that target the same ``source_repo`` are considered, the current branch
+        is kept, and any other matching open PR is closed with a note.
+        """
+        if not source_repo:
+            return
+
+        title_prefix = f"deps: update {source_repo}"
+        url = f"https://api.github.com/repos/{self.org}/{repo_name}/pulls"
+        try:
+            response = httpx.get(
+                url,
+                params={"state": "open", "per_page": 100},
+                headers=self.headers,
+                timeout=30,
+            )
+            if response.status_code != 200:
+                return
+        except Exception as e:
+            console.print(f"    [yellow]Supersede scan error: {e}[/yellow]")
+            return
+
+        for pr in response.json():
+            head = (pr.get("head") or {}).get("ref", "")
+            title = pr.get("title") or ""
+            number = pr.get("number")
+            if not number:
+                continue
+            if head == keep_branch:
+                continue
+            if not head.startswith("deepiri-cascade/"):
+                continue
+            if not title.startswith(title_prefix):
+                continue
+            self._close_pull_request(
+                repo_name, number, title, superseding_url=pr.get("html_url") or ""
+            )
+
+    def _close_pull_request(self, repo_name: str, number: int, title: str, superseding_url: str = "") -> None:
+        """Close a superseded PR and leave a brief note."""
+        close_url = f"https://api.github.com/repos/{self.org}/{repo_name}/pulls/{number}"
+        try:
+            response = httpx.patch(close_url, json={"state": "closed"}, headers=self.headers, timeout=30)
+            if response.status_code == 200:
+                console.print(f"    [yellow]Closed superseded PR #{number} ({title})[/yellow]")
+                if superseding_url:
+                    body = (
+                        f"Automatically closed by cascade: superseded by the newer "
+                        f"dependency bump in {superseding_url}. The older version would be "
+                        f"immediately overwritten, closing to avoid conflicts."
+                    )
+                    comment_url = f"https://api.github.com/repos/{self.org}/{repo_name}/issues/{number}/comments"
+                    try:
+                        httpx.post(comment_url, json={"body": body}, headers=self.headers, timeout=30)
+                    except Exception:
+                        pass
+            else:
+                console.print(f"    [yellow]Could not close PR #{number}: {response.status_code}[/yellow]")
+        except Exception as e:
+            console.print(f"    [yellow]Close PR #{number} error: {e}[/yellow]")
 
     def _find_existing_pull_request(
         self, repo_name: str, branch_name: str
