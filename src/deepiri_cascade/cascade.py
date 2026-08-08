@@ -201,7 +201,7 @@ class CascadeProcessor:
                                 updated = True
 
                 elif manifest.kind == "poetry":
-                    deps = poetry.parse_pyproject_toml(manifest.path)
+                    deps = poetry.parse_pyproject_toml(manifest.path, self.org)
                     for dep_name, dep_repo in deps.items():
                         if dep_repo in target_refs:
                             matched_dependency = True
@@ -235,11 +235,11 @@ class CascadeProcessor:
                                     update_failed = True
 
                 elif manifest.kind == "pep621":
-                    deps = pep508.parse_project_dependencies(manifest.path)
+                    deps = pep508.parse_project_dependencies(manifest.path, self.org)
                     for dep_name, dep_repo in deps.items():
                         if dep_repo in target_refs:
                             matched_dependency = True
-                            ref_key = pep508.get_dependency_ref_key(manifest.path, dep_name)
+                            ref_key = pep508.get_dependency_ref_key(manifest.path, dep_name, self.org)
                             target_ref = target_refs[dep_repo]
                             update_ref = pep508.resolve_pep508_pin(
                                 ref_key,
@@ -263,7 +263,7 @@ class CascadeProcessor:
                                 updated = True
 
                 elif manifest.kind == "gitmodules":
-                    deps = gitmodules.parse_gitmodules(manifest.path)
+                    deps = gitmodules.parse_gitmodules(manifest.path, self.org)
                     for submodule_path, dep_repo in deps.items():
                         if dep_repo in target_refs:
                             matched_dependency = True
@@ -371,12 +371,41 @@ class CascadeProcessor:
             if result.returncode != 0:
                 return None
 
+            self._scrub_remote_url(clone_path, repo_name)
             self._configure_git_auth(clone_path)
             self._repo_cache[repo_name] = clone_path
             return clone_path
 
         except Exception:
             return None
+
+    def _scrub_remote_url(self, path: Path, repo_name: str) -> None:
+        """Remove any embedded access token from the persisted origin URL.
+
+        Cloning embeds the token in the remote URL (and git persists it to
+        .git/config). Rewriting the origin to a token-free URL prevents the
+        secret leaking from the runner's working tree, while later fetches
+        still authenticate through the insteadOf rewrite in
+        _configure_git_auth/_git_auth_config_args.
+        """
+        clean_url = f"https://github.com/{self.org}/{repo_name}.git"
+        try:
+            subprocess.run(
+                ["git", "remote", "set-url", "origin", clean_url],
+                cwd=path,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            subprocess.run(
+                ["git", "config", "--unset-all", "remote.origin.extraheader"],
+                cwd=path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception:
+            pass
 
     def _resolve_update_ref(self, dep_repo: str, ref: str) -> str:
         """Resolve tags, SHAs, and mistaken consumer semver tags to a git checkout ref."""
