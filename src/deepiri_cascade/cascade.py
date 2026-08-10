@@ -201,7 +201,7 @@ class CascadeProcessor:
                                 updated = True
 
                 elif manifest.kind == "poetry":
-                    deps = poetry.parse_pyproject_toml(manifest.path)
+                    deps = poetry.parse_pyproject_toml(manifest.path, self.org)
                     for dep_name, dep_repo in deps.items():
                         if dep_repo in target_refs:
                             matched_dependency = True
@@ -235,11 +235,11 @@ class CascadeProcessor:
                                     update_failed = True
 
                 elif manifest.kind == "pep621":
-                    deps = pep508.parse_project_dependencies(manifest.path)
+                    deps = pep508.parse_project_dependencies(manifest.path, self.org)
                     for dep_name, dep_repo in deps.items():
                         if dep_repo in target_refs:
                             matched_dependency = True
-                            ref_key = pep508.get_dependency_ref_key(manifest.path, dep_name)
+                            ref_key = pep508.get_dependency_ref_key(manifest.path, dep_name, self.org)
                             target_ref = target_refs[dep_repo]
                             update_ref = pep508.resolve_pep508_pin(
                                 ref_key,
@@ -256,6 +256,7 @@ class CascadeProcessor:
                                 manifest.path,
                                 dep_name,
                                 update_ref,
+                                self.org,
                             ):
                                 console.print(f"    [green]Updated {manifest.path.relative_to(clone_path)}[/green]")
                                 bumped = poetry.bump_pyproject_version(manifest.path, self.bump_type)
@@ -263,7 +264,7 @@ class CascadeProcessor:
                                 updated = True
 
                 elif manifest.kind == "gitmodules":
-                    deps = gitmodules.parse_gitmodules(manifest.path)
+                    deps = gitmodules.parse_gitmodules(manifest.path, self.org)
                     for submodule_path, dep_repo in deps.items():
                         if dep_repo in target_refs:
                             matched_dependency = True
@@ -371,12 +372,41 @@ class CascadeProcessor:
             if result.returncode != 0:
                 return None
 
+            self._scrub_remote_url(clone_path, repo_name)
             self._configure_git_auth(clone_path)
             self._repo_cache[repo_name] = clone_path
             return clone_path
 
         except Exception:
             return None
+
+    def _scrub_remote_url(self, path: Path, repo_name: str) -> None:
+        """Remove any embedded access token from the persisted origin URL.
+
+        Cloning embeds the token in the remote URL (and git persists it to
+        .git/config). Rewriting the origin to a token-free URL prevents the
+        secret leaking from the runner's working tree, while later fetches
+        still authenticate through the insteadOf rewrite in
+        _configure_git_auth/_git_auth_config_args.
+        """
+        clean_url = f"https://github.com/{self.org}/{repo_name}.git"
+        try:
+            subprocess.run(
+                ["git", "remote", "set-url", "origin", clean_url],
+                cwd=path,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            subprocess.run(
+                ["git", "config", "--unset-all", "remote.origin.extraheader"],
+                cwd=path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception:
+            pass
 
     def _resolve_update_ref(self, dep_repo: str, ref: str) -> str:
         """Resolve tags, SHAs, and mistaken consumer semver tags to a git checkout ref."""
@@ -532,12 +562,21 @@ Auto-merge is enabled when required CI checks pass.
                 pr_data = response.json()
                 pr_url = pr_data.get("html_url")
                 self._schedule_pull_request_auto_merge(repo_name, pr_data)
+                self._close_superseded_pull_requests(
+                    repo_name, branch_name, self._source_repo or "", superseding_url=pr_url or ""
+                )
                 return pr_url
             if response.status_code == 422 and "pull request already exists" in response.text.lower():
                 existing_pr = self._find_existing_pull_request(repo_name, branch_name)
                 if existing_pr:
                     console.print(f"    [yellow]PR already exists: {existing_pr.get('html_url')}[/yellow]")
                     self._schedule_pull_request_auto_merge(repo_name, existing_pr)
+                    self._close_superseded_pull_requests(
+                        repo_name,
+                        branch_name,
+                        self._source_repo or "",
+                        superseding_url=existing_pr.get("html_url") or "",
+                    )
                     return existing_pr.get("html_url")
                 console.print(f"    [yellow]PR already exists but could not resolve URL[/yellow]")
                 return None
@@ -548,6 +587,95 @@ Auto-merge is enabled when required CI checks pass.
         except Exception as e:
             console.print(f"    [red]PR creation error: {e}[/red]")
             return None
+
+    def _close_superseded_pull_requests(
+        self,
+        repo_name: str,
+        keep_branch: str,
+        source_repo: str,
+        superseding_url: str = "",
+    ) -> None:
+        """Close open cascade PRs for a dependency that the new bump supersedes.
+
+        When the same source dependency is released again (e.g. bumping helox
+        to 1.3.0 and then later to 1.3.1), the older cascade PR is stale and
+        should be closed in favor of the newly created one. Only cascade PRs
+        that target the same ``source_repo`` are considered, the current branch
+        is kept, and any other matching open PR is closed with a note pointing
+        at the newer ``superseding_url``.
+        """
+        if not source_repo:
+            return
+
+        title_prefix = f"deps: update {source_repo}"
+        url = f"https://api.github.com/repos/{self.org}/{repo_name}/pulls"
+        params = {"state": "open", "per_page": 100}
+        try:
+            response = httpx.get(
+                url,
+                params=params,
+                headers=self.headers,
+                timeout=30,
+            )
+
+            all_prs = []
+            while True:
+                if response.status_code != 200:
+                    return
+                all_prs.extend(response.json())
+                link = response.headers.get("Link", "")
+                if 'rel="next"' not in link:
+                    break
+                next_url = None
+                for part in link.split(","):
+                    section = part.split(";")
+                    if len(section) == 2 and 'rel="next"' in section[1]:
+                        next_url = section[0].strip().strip("<>")
+                if not next_url:
+                    break
+                response = httpx.get(next_url, headers=self.headers, timeout=30)
+        except Exception as e:
+            console.print(f"    [yellow]Supersede scan error: {e}[/yellow]")
+            return
+
+        for pr in all_prs:
+            head = (pr.get("head") or {}).get("ref", "")
+            title = pr.get("title") or ""
+            number = pr.get("number")
+            if not number:
+                continue
+            if head == keep_branch:
+                continue
+            if not head.startswith("deepiri-cascade/"):
+                continue
+            if not title.startswith(title_prefix):
+                continue
+            self._close_pull_request(
+                repo_name, number, title, superseding_url=superseding_url
+            )
+
+    def _close_pull_request(self, repo_name: str, number: int, title: str, superseding_url: str = "") -> None:
+        """Close a superseded PR and leave a brief note."""
+        close_url = f"https://api.github.com/repos/{self.org}/{repo_name}/pulls/{number}"
+        try:
+            response = httpx.patch(close_url, json={"state": "closed"}, headers=self.headers, timeout=30)
+            if response.status_code in (200, 202):
+                console.print(f"    [yellow]Closed superseded PR #{number} ({title})[/yellow]")
+                if superseding_url:
+                    body = (
+                        f"Automatically closed by cascade: superseded by the newer "
+                        f"dependency bump in {superseding_url}. The older version would be "
+                        f"immediately overwritten, closing to avoid conflicts."
+                    )
+                    comment_url = f"https://api.github.com/repos/{self.org}/{repo_name}/issues/{number}/comments"
+                    try:
+                        httpx.post(comment_url, json={"body": body}, headers=self.headers, timeout=30)
+                    except Exception:
+                        pass
+            else:
+                console.print(f"    [yellow]Could not close PR #{number}: {response.status_code}[/yellow]")
+        except Exception as e:
+            console.print(f"    [yellow]Close PR #{number} error: {e}[/yellow]")
 
     def _find_existing_pull_request(
         self, repo_name: str, branch_name: str
@@ -564,6 +692,79 @@ Auto-merge is enabled when required CI checks pass.
                 prs = response.json()
                 if prs:
                     return prs[0]
+        except Exception:
+            pass
+        return None
+
+    def _get_repository(self, repo_name: str) -> dict:
+        """Fetch repository metadata from GitHub."""
+        url = f"https://api.github.com/repos/{self.org}/{repo_name}"
+        try:
+            response = httpx.get(url, headers=self.headers, timeout=10)
+            if response.status_code == 200:
+                return response.json()
+        except Exception:
+            pass
+        return {}
+
+    def _ensure_repo_auto_merge(self, repo_name: str) -> bool:
+        """Turn on allow_auto_merge for consumer repos when the App has admin access."""
+        repo = self._get_repository(repo_name)
+        if repo.get("allow_auto_merge"):
+            return True
+
+        url = f"https://api.github.com/repos/{self.org}/{repo_name}"
+        try:
+            response = httpx.patch(
+                url,
+                json={"allow_auto_merge": True},
+                headers=self.headers,
+                timeout=30,
+            )
+            if response.status_code == 200:
+                console.print(f"    [green]Enabled allow_auto_merge on {repo_name}[/green]")
+                return True
+            detail = response.text[:200]
+            console.print(
+                f"    [yellow]Could not enable allow_auto_merge on {repo_name}: "
+                f"{response.status_code} {detail}[/yellow]"
+            )
+        except Exception as e:
+            console.print(f"    [yellow]allow_auto_merge error: {e}[/yellow]")
+        return False
+
+    def _pick_merge_method(self, repo_name: str) -> str:
+        """Pick a merge method supported by the target repository."""
+        repo = self._get_repository(repo_name)
+        if repo.get("allow_squash_merge"):
+            return "SQUASH"
+        if repo.get("allow_merge_commit"):
+            return "MERGE"
+        if repo.get("allow_rebase_merge"):
+            return "REBASE"
+        return "MERGE"
+
+    def _schedule_pull_request_auto_merge(self, repo_name: str, pr: dict) -> None:
+        """Queue a PR to merge automatically once required checks pass."""
+        pr_node_id = pr.get("node_id")
+        pr_number = pr.get("number")
+        if not pr_node_id and pr_number:
+            pr_node_id = self._get_pull_request_node_id(repo_name, pr_number)
+        if not pr_node_id:
+            console.print("    [yellow]Could not resolve PR node id for auto-merge[/yellow]")
+            return
+
+        self._ensure_repo_auto_merge(repo_name)
+        merge_method = self._pick_merge_method(repo_name)
+        self._enable_auto_merge(pr_node_id, merge_method)
+
+    def _get_pull_request_node_id(self, repo_name: str, pr_number: int) -> Optional[str]:
+        """Look up a pull request GraphQL node id."""
+        url = f"https://api.github.com/repos/{self.org}/{repo_name}/pulls/{pr_number}"
+        try:
+            response = httpx.get(url, headers=self.headers, timeout=30)
+            if response.status_code == 200:
+                return response.json().get("node_id")
         except Exception:
             pass
         return None

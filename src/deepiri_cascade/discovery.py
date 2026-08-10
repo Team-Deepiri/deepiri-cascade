@@ -186,16 +186,16 @@ class Discovery:
             f.write(content)
             f.flush()
             path = Path(f.name)
-            for name, dep_repo in poetry.parse_pyproject_toml(path).items():
+            for name, dep_repo in poetry.parse_pyproject_toml(path, self.org).items():
                 deps[name] = dep_repo
-            for name, dep_repo in pep508.parse_project_dependencies(path).items():
+            for name, dep_repo in pep508.parse_project_dependencies(path, self.org).items():
                 deps[name] = dep_repo
 
     def _merge_poetry_lock_deps(self, content: str, deps: Dict[str, str]) -> None:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".lock", delete=False) as f:
             f.write(content)
             f.flush()
-            for name, dep_repo in parse_poetry_lock(Path(f.name)).items():
+            for name, dep_repo in parse_poetry_lock(Path(f.name), self.org).items():
                 deps.setdefault(name, dep_repo)
 
     def _merge_package_lock_deps(self, content: str, deps: Dict[str, str]) -> None:
@@ -209,7 +209,7 @@ class Discovery:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".gitmodules", delete=False) as f:
             f.write(content)
             f.flush()
-            parsed = gitmodules.parse_gitmodules(Path(f.name))
+            parsed = gitmodules.parse_gitmodules(Path(f.name), self.org)
             for submodule_path, dep_repo in parsed.items():
                 deps[submodule_path] = dep_repo
 
@@ -235,7 +235,7 @@ class Discovery:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".lock", delete=False) as f:
                 f.write(poetry_lock)
                 f.flush()
-                for name, dep_repo in parse_poetry_lock(Path(f.name)).items():
+                for name, dep_repo in parse_poetry_lock(Path(f.name), self.org).items():
                     deps.setdefault(name, dep_repo)
 
         package_lock = self.fetch_file_content(repo_name, "package-lock.json")
@@ -251,7 +251,7 @@ class Discovery:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".gitmodules", delete=False) as f:
                 f.write(gitmodules_content)
                 f.flush()
-                parsed = gitmodules.parse_gitmodules(Path(f.name))
+                parsed = gitmodules.parse_gitmodules(Path(f.name), self.org)
                 for submodule_path, dep_repo in parsed.items():
                     deps[submodule_path] = dep_repo
 

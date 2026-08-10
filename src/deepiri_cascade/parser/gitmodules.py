@@ -13,7 +13,7 @@ class SubmoduleUpdateResult:
     message: str = ""
 
 
-def parse_gitmodules(path: Path) -> dict:
+def parse_gitmodules(path: Path, org: str = "team-deepiri") -> dict:
     """Parse .gitmodules and extract Deepiri submodules."""
     try:
         content = path.read_text()
@@ -35,7 +35,11 @@ def parse_gitmodules(path: Path) -> dict:
         url_match = re.search(r'url\s*=\s*(.+?)$', block, re.MULTILINE)
         if url_match:
             url = url_match.group(1).strip()
-            repo_match = re.search(r'team-deepiri[/:]([^/]+?)(?:\.git)?$', url, re.IGNORECASE)
+            repo_match = re.search(
+                rf'{re.escape(org)}[/:]([^/]+?)(?:\.git)?$',
+                url,
+                re.IGNORECASE,
+            )
             if repo_match:
                 repo = repo_match.group(1)
                 submodule_path = path_match.group(1).strip() if path_match else name

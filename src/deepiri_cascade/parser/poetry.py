@@ -6,7 +6,7 @@ from typing import Callable, Literal, Optional
 RefKey = Literal["rev", "tag"]
 
 
-def parse_pyproject_toml(path: Path) -> dict:
+def parse_pyproject_toml(path: Path, org: str = "team-deepiri") -> dict:
     """Parse pyproject.toml and extract Deepiri dependencies."""
     try:
         content = path.read_text()
@@ -18,7 +18,7 @@ def parse_pyproject_toml(path: Path) -> dict:
     # Poetry git dependencies use `git =`, not `url =`.
     # re.DOTALL so [^}]* crosses newlines for multi-line TOML blocks.
     deepiri_pattern = re.compile(
-        r'([a-z][a-z0-9_-]*)\s*=\s*\{[^}]*git\s*=\s*["\']https?://github\.com/team-deepiri/([^"\']+)["\'][^}]*\}',
+        rf'([a-z][a-z0-9_-]*)\s*=\s*\{{[^}}]*git\s*=\s*["\']https?://github\.com/{re.escape(org)}/([^"\']+)["\'][^}}]*\}}',
         re.IGNORECASE | re.DOTALL
     )
 
@@ -189,7 +189,7 @@ def get_pyproject_version(path: Path) -> Optional[str]:
     return None
 
 
-def parse_poetry_lock(path: Path) -> dict:
+def parse_poetry_lock(path: Path, org: str = "team-deepiri") -> dict:
     """Parse poetry.lock and extract Deepiri git-sourced dependencies.
 
     Returns a dict of {python_package_name: github_repo_name}.
@@ -207,7 +207,7 @@ def parse_poetry_lock(path: Path) -> dict:
     )
     name_pattern = re.compile(r'^name\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
     source_url_pattern = re.compile(
-        r'\[package\.source\].*?url\s*=\s*["\']https?://github\.com/team-deepiri/([^"\']+)["\']',
+        rf'\[package\.source\].*?url\s*=\s*["\']https?://github\.com/{re.escape(org or "team-deepiri")}/([^"\']+)["\']',
         re.DOTALL
     )
 
