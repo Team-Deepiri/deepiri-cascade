@@ -340,6 +340,26 @@ dependencies = [
             path = Path(f.name)
             assert pep508.update_project_dependency(path, "deepiri-gpu-utils", "v0.2.0") is False
 
+    def test_update_project_dependency_honors_non_default_org(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+            f.write("""
+[project]
+name = "consumer"
+version = "0.1.0"
+dependencies = [
+  "deepiri-gpu-utils @ git+https://github.com/AcmeInc/deepiri-gpu-utils.git@v0.1.0",
+]
+""")
+            f.flush()
+            path = Path(f.name)
+            assert (
+                pep508.update_project_dependency(
+                    path, "deepiri-gpu-utils", "v0.2.0", org="AcmeInc"
+                )
+                is True
+            )
+            assert "@v0.2.0" in path.read_text()
+
     def test_resolve_pep508_pin_tag_on_tag_release(self):
         assert pep508.resolve_pep508_pin(
             "tag",
