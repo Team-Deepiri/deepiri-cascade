@@ -17,9 +17,10 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       pushes_json: ${{ steps.check.outputs.pushes_json }}
+      has_pushes: ${{ steps.check.outputs.has_pushes }}
     steps:
       - name: Restore push state
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: push_state.json
           key: push-state-${{ github.run_id }}
@@ -98,12 +99,17 @@ jobs:
                   print(f"First seen HEAD for {name}: {sha[:8]}")
 
           pushes_json = json.dumps(new_pushes)
+          # has_pushes is the gate for the `cascade` job. Do not gate on
+          # `fromJson(pushes_json).length` -- an empty/miswritten job output makes
+          # that expression skip the job silently instead of failing loudly.
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"pushes_json={pushes_json}\n")
+              f.write(f"has_pushes={'true' if new_pushes else 'false'}\n")
 
           with open(state_file, "w") as f:
               json.dump(current_state, f)
 
+          print(f"pushes_json={pushes_json}")
           print(f"New pushes found: {len(new_pushes)}")
           EOF
 
@@ -116,23 +122,48 @@ jobs:
 
   cascade:
     needs: check-pushes
-    if: ${{ fromJson(needs.check-pushes.outputs.pushes_json).length > 0 }}
+    if: ${{ needs.check-pushes.outputs.has_pushes == 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
+      fail-fast: false
       matrix:
         include: ${{ fromJson(needs.check-pushes.outputs.pushes_json) }}
     steps:
-      - name: Trigger push cascade for ${{ matrix.repo }}
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # A repository_dispatch sent with the default GITHUB_TOKEN does NOT start a
+      # new workflow run (GitHub's recursion guard), so the monitor fallback
+      # never actually triggered cascade.yml. Mint the cascade GitHub App token
+      # instead -- same App the Cloudflare worker uses.
+      - name: Mint cascade App token
+        id: app-token
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          GITHUB_APP_OWNER: ${{ env.ORG }}
         run: |
-          curl -X POST https://api.github.com/repos/${{ env.ORG }}/${{ env.CASCADE_REPO }}/dispatches \
+          python -m pip install --quiet PyJWT cryptography httpx
+          python scripts/mint_github_app_token.py
+
+      - name: Trigger push cascade for ${{ matrix.repo }}
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ matrix.repo }}
+          SHA: ${{ matrix.sha }}
+        run: |
+          payload="$(jq -n --arg repo "$REPO" --arg sha "$SHA" \
+            '{event_type: "cascade-trigger", client_payload: {repo: $repo, sha: $sha, trigger: "push"}}')"
+          curl -sSf -X POST \
+            "https://api.github.com/repos/${ORG}/${CASCADE_REPO}/dispatches" \
             -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: Bearer ${TOKEN}" \
             -H "Content-Type: application/json" \
-            -d '{
-              "event_type": "cascade-trigger",
-              "client_payload": {
-                "repo": "${{ matrix.repo }}",
-                "sha": "${{ matrix.sha }}",
-                "trigger": "push"
-              }
-            }'
+            -d "$payload"
+          echo "Dispatched cascade-trigger for ${REPO}@${SHA}"
