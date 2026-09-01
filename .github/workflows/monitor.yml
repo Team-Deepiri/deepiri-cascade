@@ -17,9 +17,10 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tags_json: ${{ steps.check.outputs.tags_json }}
+      has_tags: ${{ steps.check.outputs.has_tags }}
     steps:
       - name: Restore tag state
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: tag_state.json
           key: tag-state-${{ github.run_id }}
@@ -101,15 +102,19 @@ jobs:
                   else:
                       print(f"First seen tag for {repo}: {tag}")
 
-          # Output tags
+          # Output tags. has_tags is the gate for the `cascade` job -- do not
+          # gate on `fromJson(tags_json).length`, an empty/miswritten job output
+          # makes that expression skip the job silently instead of failing loudly.
           tags_json = json.dumps(new_tags)
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"tags_json={tags_json}\n")
+              f.write(f"has_tags={'true' if new_tags else 'false'}\n")
 
           # Save state for next run
           with open(state_file, "w") as f:
               json.dump(current_state, f)
 
+          print(f"tags_json={tags_json}")
           print(f"New tags found: {len(new_tags)}")
           EOF
 
@@ -122,22 +127,48 @@ jobs:
 
   cascade:
     needs: check-tags
-    if: ${{ fromJson(needs.check-tags.outputs.tags_json).length > 0 }}
+    if: ${{ needs.check-tags.outputs.has_tags == 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
+      fail-fast: false
       matrix:
         include: ${{ fromJson(needs.check-tags.outputs.tags_json) }}
     steps:
-      - name: Trigger cascade for ${{ matrix.repo }}
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # A repository_dispatch sent with the default GITHUB_TOKEN does NOT start a
+      # new workflow run (GitHub's recursion guard), so this fallback never
+      # actually triggered cascade.yml. Mint the cascade GitHub App token
+      # instead -- same App the Cloudflare worker uses.
+      - name: Mint cascade App token
+        id: app-token
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          GITHUB_APP_OWNER: ${{ env.ORG }}
         run: |
-          curl -X POST https://api.github.com/repos/${{ env.ORG }}/${{ env.CASCADE_REPO }}/dispatches \
+          python -m pip install --quiet PyJWT cryptography httpx
+          python scripts/mint_github_app_token.py
+
+      - name: Trigger cascade for ${{ matrix.repo }}
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ matrix.repo }}
+          TAG: ${{ matrix.tag }}
+        run: |
+          payload="$(jq -n --arg repo "$REPO" --arg tag "$TAG" \
+            '{event_type: "cascade-trigger", client_payload: {repo: $repo, tag: $tag}}')"
+          curl -sSf -X POST \
+            "https://api.github.com/repos/${ORG}/${CASCADE_REPO}/dispatches" \
             -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: Bearer ${TOKEN}" \
             -H "Content-Type: application/json" \
-            -d '{
-              "event_type": "cascade-trigger",
-              "client_payload": {
-                "repo": "${{ matrix.repo }}",
-                "tag": "${{ matrix.tag }}"
-              }
-            }'
+            -d "$payload"
+          echo "Dispatched cascade-trigger for ${REPO} ${TAG}"
