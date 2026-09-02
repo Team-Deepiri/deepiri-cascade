@@ -1,6 +1,19 @@
 name: Deploy Worker
 
 on:
+  # The workflow_run path below only fires after CI succeeds on main. Release
+  # merges to main are made with "[skip ci]", so CI never runs and the worker
+  # was left frozen (last deploy 2026-08-11). Deploy directly on pushes to main
+  # that touch the worker. NOTE: a commit whose message contains "[skip ci]"
+  # skips this trigger too -- for those, run this workflow via workflow_dispatch,
+  # or land worker changes in a commit without "[skip ci]".
+  push:
+    branches: [main]
+    paths:
+      - 'worker/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/deploy.yml'
   workflow_run:
     workflows: [CI]
     branches: [main]
@@ -16,6 +29,7 @@ jobs:
     name: Deploy Cloudflare Worker
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
