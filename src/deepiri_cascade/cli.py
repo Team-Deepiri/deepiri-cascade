@@ -34,8 +34,24 @@ def main(ctx, verbose):
 @click.option("--no-confirm", is_flag=True, help="Skip confirmation prompt")
 @click.option("--work-dir", default="/tmp/deepiri-cascade", help="Working directory for git operations")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
+@click.option(
+    "--admin-merge",
+    is_flag=True,
+    help="Fall back to a direct admin merge when GitHub auto-merge cannot be enabled",
+)
+@click.option(
+    "--allow-self-merge",
+    is_flag=True,
+    help="Permit admin merge on deepiri-cascade itself (merges to main and deploys to prod)",
+)
+@click.option(
+    "--admin-merge-timeout",
+    default=600,
+    type=click.IntRange(min=0),
+    help="Seconds to wait for green CI checks before attempting an admin merge",
+)
 @click.pass_context
-def cascade(ctx, repo, tag, sha, trigger, org, token, bump_type, dry_run, no_confirm, work_dir, verbose):
+def cascade(ctx, repo, tag, sha, trigger, org, token, bump_type, dry_run, no_confirm, work_dir, verbose, admin_merge, allow_self_merge, admin_merge_timeout):
     """Run cascade update for a tagged release or default-branch push."""
     from .auto_detect import detect_cascade_inputs
     from .github_auth import get_token
@@ -73,6 +89,9 @@ def cascade(ctx, repo, tag, sha, trigger, org, token, bump_type, dry_run, no_con
         dry_run=dry_run,
         work_dir=work_dir,
         verbose=verbose,
+        admin_merge=admin_merge,
+        allow_self_merge=allow_self_merge,
+        admin_merge_timeout=admin_merge_timeout,
     )
 
     results = processor.run(
