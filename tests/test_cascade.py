@@ -669,6 +669,183 @@ class TestAutoMerge:
 
         assert proc._enable_auto_merge("PR_123", "MERGE") is False
 
+    def test_schedule_returns_false_when_auto_merge_fails(self, monkeypatch):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc._ensure_repo_auto_merge = lambda repo: True
+        proc._pick_merge_method = lambda repo: "SQUASH"
+        proc._enable_auto_merge = lambda node_id, merge_method: False
+
+        assert proc._schedule_pull_request_auto_merge(
+            "consumer", {"node_id": "PR_123", "number": 42}
+        ) is False
+
+
+class TestAdminMergeFallback:
+    def _make_proc(self, admin_merge=True, allow_self_merge=False):
+        proc = CascadeProcessor.__new__(CascadeProcessor)
+        proc.org = "team-deepiri"
+        proc.admin_merge = admin_merge
+        proc.allow_self_merge = allow_self_merge
+        proc.admin_merge_timeout = 600
+        return proc
+
+    def test_skips_when_admin_merge_disabled(self):
+        proc = self._make_proc(admin_merge=False)
+        calls = []
+        proc._wait_for_checks_success = lambda repo, sha: calls.append("checks") or True
+        proc._admin_merge_pull_request = lambda repo, num: calls.append(("merge", num)) or True
+
+        proc._fallback_admin_merge("consumer", {"number": 7, "head": {"sha": "abc"}})
+
+        assert calls == []
+
+    def test_skips_self_merge_without_allow_flag(self):
+        proc = self._make_proc(admin_merge=True, allow_self_merge=False)
+        calls = []
+        proc._wait_for_checks_success = lambda repo, sha: calls.append("checks") or True
+        proc._admin_merge_pull_request = lambda repo, num: calls.append(("merge", num)) or True
+
+        proc._fallback_admin_merge("deepiri-cascade", {"number": 7, "head": {"sha": "abc"}})
+
+        assert calls == []
+
+    def test_allows_self_merge_when_flags_enabled(self):
+        proc = self._make_proc(admin_merge=True, allow_self_merge=True)
+        calls = []
+        proc._wait_for_checks_success = lambda repo, sha: calls.append(("checks", repo, sha)) or True
+        proc._admin_merge_pull_request = lambda repo, num: calls.append(("merge", repo, num)) or True
+
+        proc._fallback_admin_merge("deepiri-cascade", {"number": 7, "head": {"sha": "abc"}})
+
+        assert calls == [("checks", "deepiri-cascade", "abc"), ("merge", "deepiri-cascade", 7)]
+
+    def test_skips_conflicting_pr_even_when_checks_pass(self):
+        proc = self._make_proc()
+        calls = []
+        proc._wait_for_checks_success = lambda repo, sha: calls.append("checks") or True
+        proc._admin_merge_pull_request = lambda repo, num: calls.append(("merge", num)) or True
+
+        proc._fallback_admin_merge(
+            "consumer", {"number": 7, "mergeable_state": "conflict", "head": {"sha": "abc"}}
+        )
+
+        assert calls == []
+
+    def test_skips_unmergeable_pr(self):
+        proc = self._make_proc()
+        calls = []
+        proc._wait_for_checks_success = lambda repo, sha: calls.append("checks") or True
+        proc._admin_merge_pull_request = lambda repo, num: calls.append(("merge", num)) or True
+
+        proc._fallback_admin_merge(
+            "consumer", {"number": 7, "mergeable": False, "head": {"sha": "abc"}}
+        )
+
+        assert calls == []
+
+    def test_waits_for_checks_and_merges_when_green(self):
+        proc = self._make_proc()
+        calls = []
+        proc._wait_for_checks_success = lambda repo, sha: calls.append(("checks", repo, sha)) or True
+        proc._admin_merge_pull_request = lambda repo, num: calls.append(("merge", repo, num)) or True
+
+        proc._fallback_admin_merge("consumer", {"number": 7, "head": {"sha": "abc"}})
+
+        assert calls == [("checks", "consumer", "abc"), ("merge", "consumer", 7)]
+
+    def test_no_merge_when_checks_never_green(self):
+        proc = self._make_proc()
+        calls = []
+        proc._wait_for_checks_success = lambda repo, sha: False
+        proc._admin_merge_pull_request = lambda repo, num: calls.append(("merge", num)) or True
+
+        proc._fallback_admin_merge("consumer", {"number": 7, "head": {"sha": "abc"}})
+
+        assert calls == []
+
+    def test_wait_for_checks_success(self, monkeypatch):
+        proc = self._make_proc()
+        proc.admin_merge_timeout = 5
+        proc._combined_status_passes = lambda repo, sha: True
+
+        assert proc._wait_for_checks_success("consumer", "abc") is True
+
+    def test_wait_for_checks_timeout(self, monkeypatch):
+        proc = self._make_proc()
+        proc.admin_merge_timeout = 0
+        proc._combined_status_passes = lambda repo, sha: False
+
+        assert proc._wait_for_checks_success("consumer", "abc") is False
+
+    def test_combined_status_passes_true(self, monkeypatch):
+        proc = self._make_proc()
+        proc.headers = {}
+
+        class Response:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"state": "success"}
+
+        monkeypatch.setattr(
+            "deepiri_cascade.cascade.httpx.get",
+            lambda url, **kwargs: Response(),
+        )
+
+        assert proc._combined_status_passes("consumer", "abc") is True
+
+    def test_combined_status_passes_false(self, monkeypatch):
+        proc = self._make_proc()
+        proc.headers = {}
+
+        class Response:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"state": "failure"}
+
+        monkeypatch.setattr(
+            "deepiri_cascade.cascade.httpx.get",
+            lambda url, **kwargs: Response(),
+        )
+
+        assert proc._combined_status_passes("consumer", "abc") is False
+
+    def test_admin_merge_pull_request_success(self, monkeypatch):
+        proc = self._make_proc()
+        proc.headers = {}
+        proc._pick_merge_method = lambda repo: "SQUASH"
+
+        class Response:
+            status_code = 200
+            text = ""
+
+        monkeypatch.setattr(
+            "deepiri_cascade.cascade.httpx.put",
+            lambda url, **kwargs: Response(),
+        )
+
+        assert proc._admin_merge_pull_request("consumer", 42) is True
+
+    def test_admin_merge_pull_request_returns_false_on_405(self, monkeypatch):
+        proc = self._make_proc()
+        proc.headers = {}
+        proc._pick_merge_method = lambda repo: "MERGE"
+
+        class Response:
+            status_code = 405
+            text = "Branch protection would not allow merge."
+
+        monkeypatch.setattr(
+            "deepiri_cascade.cascade.httpx.put",
+            lambda url, **kwargs: Response(),
+        )
+
+        assert proc._admin_merge_pull_request("consumer", 42) is False
+
 
 class TestPoetryLockRegeneration:
     def test_regenerate_poetry_lock_updates_changed_package_only(self, tmp_path, monkeypatch):

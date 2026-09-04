@@ -3,6 +3,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -27,6 +28,9 @@ class CascadeProcessor:
         dry_run: bool = False,
         work_dir: str = "/tmp/deepiri-cascade",
         verbose: bool = False,
+        admin_merge: bool = False,
+        allow_self_merge: bool = False,
+        admin_merge_timeout: int = 600,
     ):
         self.token = token
         self.org = org
@@ -34,6 +38,9 @@ class CascadeProcessor:
         self.dry_run = dry_run
         self.work_dir = Path(work_dir)
         self.verbose = verbose
+        self.admin_merge = admin_merge
+        self.allow_self_merge = allow_self_merge
+        self.admin_merge_timeout = admin_merge_timeout
         self._repo_cache: Dict[str, Path] = {}
         self._source_sha: Optional[str] = None
         self._source_repo: Optional[str] = None
@@ -561,7 +568,8 @@ Auto-merge is enabled when required CI checks pass.
             if response.status_code == 201:
                 pr_data = response.json()
                 pr_url = pr_data.get("html_url")
-                self._schedule_pull_request_auto_merge(repo_name, pr_data)
+                if not self._schedule_pull_request_auto_merge(repo_name, pr_data):
+                    self._fallback_admin_merge(repo_name, pr_data)
                 self._close_superseded_pull_requests(
                     repo_name, branch_name, self._source_repo or "", superseding_url=pr_url or ""
                 )
@@ -570,7 +578,8 @@ Auto-merge is enabled when required CI checks pass.
                 existing_pr = self._find_existing_pull_request(repo_name, branch_name)
                 if existing_pr:
                     console.print(f"    [yellow]PR already exists: {existing_pr.get('html_url')}[/yellow]")
-                    self._schedule_pull_request_auto_merge(repo_name, existing_pr)
+                    if not self._schedule_pull_request_auto_merge(repo_name, existing_pr):
+                        self._fallback_admin_merge(repo_name, existing_pr)
                     self._close_superseded_pull_requests(
                         repo_name,
                         branch_name,
@@ -744,19 +753,23 @@ Auto-merge is enabled when required CI checks pass.
             return "REBASE"
         return "MERGE"
 
-    def _schedule_pull_request_auto_merge(self, repo_name: str, pr: dict) -> None:
-        """Queue a PR to merge automatically once required checks pass."""
+    def _schedule_pull_request_auto_merge(self, repo_name: str, pr: dict) -> bool:
+        """Queue a PR to merge automatically once required checks pass.
+
+        Returns True when auto-merge was successfully queued, False otherwise
+        so callers can attempt the admin-merge fallback.
+        """
         pr_node_id = pr.get("node_id")
         pr_number = pr.get("number")
         if not pr_node_id and pr_number:
             pr_node_id = self._get_pull_request_node_id(repo_name, pr_number)
         if not pr_node_id:
             console.print("    [yellow]Could not resolve PR node id for auto-merge[/yellow]")
-            return
+            return False
 
         self._ensure_repo_auto_merge(repo_name)
         merge_method = self._pick_merge_method(repo_name)
-        self._enable_auto_merge(pr_node_id, merge_method)
+        return self._enable_auto_merge(pr_node_id, merge_method)
 
     def _get_pull_request_node_id(self, repo_name: str, pr_number: int) -> Optional[str]:
         """Look up a pull request GraphQL node id."""
@@ -801,6 +814,92 @@ Auto-merge is enabled when required CI checks pass.
             return False
         except Exception as e:
             console.print(f"    [yellow]Auto-merge error: {e}[/yellow]")
+            return False
+
+    def _is_cascade_repo(self, repo_name: str) -> bool:
+        """Whether repo_name is the deepiri-cascade repo itself."""
+        return repo_name == "deepiri-cascade" or repo_name.endswith("/deepiri-cascade")
+
+    def _fallback_admin_merge(self, repo_name: str, pr: dict) -> None:
+        """Best-effort admin merge when GraphQL auto-merge could not be enabled.
+
+        Gated by explicit opt-in flags and a green-CI check so that a buggy
+        cascade run can never silently merge, and never pushes the cascade
+        repo itself to production without --allow-self-merge.
+        """
+        if not self.admin_merge:
+            console.print(
+                "    [dim]Auto-merge unavailable; skipping admin merge "
+                "(--admin-merge not enabled)[/dim]"
+            )
+            return
+
+        if self._is_cascade_repo(repo_name) and not self.allow_self_merge:
+            console.print(
+                "    [yellow]Skipping admin merge on deepiri-cascade "
+                "(--allow-self-merge required: this merges to main and deploys to prod)[/yellow]"
+            )
+            return
+
+        pr_number = pr.get("number")
+        if not pr_number:
+            return
+
+        state = pr.get("mergeable_state") or ""
+        if state in ("conflict", "dirty", "draft") or pr.get("mergeable") is False:
+            console.print(f"    [yellow]Skipping admin merge (mergeable_state={state or 'unmergeable'})[/yellow]")
+            return
+
+        head_sha = (pr.get("head") or {}).get("sha")
+        if head_sha and not self._wait_for_checks_success(repo_name, head_sha):
+            console.print(
+                f"    [yellow]Skipping admin merge: CI checks not green within "
+                f"{self.admin_merge_timeout}s[/yellow]"
+            )
+            return
+
+        self._admin_merge_pull_request(repo_name, pr_number)
+
+    def _wait_for_checks_success(self, repo_name: str, head_sha: str) -> bool:
+        """Poll the PR head branch's combined commit status until success/timeout."""
+        deadline = time.monotonic() + self.admin_merge_timeout
+        while time.monotonic() < deadline:
+            if self._combined_status_passes(repo_name, head_sha):
+                return True
+            time.sleep(15)
+        return self._combined_status_passes(repo_name, head_sha)
+
+    def _combined_status_passes(self, repo_name: str, head_sha: str) -> bool:
+        """Check the combined commit status (checks + statuses) is green."""
+        url = (
+            f"https://api.github.com/repos/{self.org}/{repo_name}/commits/{head_sha}/status"
+        )
+        try:
+            response = httpx.get(url, headers=self.headers, timeout=15)
+            if response.status_code == 200:
+                return response.json().get("state") == "success"
+        except Exception:
+            pass
+        return False
+
+    def _admin_merge_pull_request(self, repo_name: str, pr_number: int) -> bool:
+        """Merge a pull request directly using admin privileges (REST API)."""
+        method = self._pick_merge_method(repo_name).lower()
+        url = f"https://api.github.com/repos/{self.org}/{repo_name}/pulls/{pr_number}/merge"
+        payload = {"merge_method": method}
+        try:
+            response = httpx.put(url, json=payload, headers=self.headers, timeout=30)
+            if response.status_code in (200, 201):
+                console.print(f"    [green]Admin-merged PR #{pr_number} ({method})[/green]")
+                return True
+            detail = response.text[:200]
+            console.print(
+                f"    [yellow]Admin merge failed for PR #{pr_number}: "
+                f"{response.status_code} {detail}[/yellow]"
+            )
+            return False
+        except Exception as e:
+            console.print(f"    [yellow]Admin merge error for PR #{pr_number}: {e}[/yellow]")
             return False
 
     def _get_default_branch(self, repo_name: str) -> str:
