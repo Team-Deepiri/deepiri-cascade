@@ -1,0 +1,51 @@
+name: Probe Bot Admin Merge
+run-name: Probe bot admin merge of PR #${{ inputs.pr_number }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to merge as the deepiri-cascade App'
+        required: true
+        type: number
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Mint App installation token
+        id: token
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          GITHUB_APP_OWNER: team-deepiri
+        run: |
+          python -m pip install --quiet PyJWT cryptography httpx
+          python scripts/mint_github_app_token.py
+
+      - name: Attempt merge as the App
+        id: merge
+        env:
+          TOKEN: ${{ steps.token.outputs.token }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+        run: |
+          RESPONSE=$(curl -s -o /tmp/probe_response.json -w "%{http_code}" \
+            -X PUT \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/Team-Deepiri/deepiri-cascade/pulls/${PR_NUMBER}/merge \
+            -d '{"merge_method":"squash"}')
+          echo "http_code=${RESPONSE}" >> "$GITHUB_OUTPUT"
+          echo "--- HTTP $RESPONSE ---"
+          cat /tmp/probe_response.json
