@@ -18,6 +18,16 @@ on:
         description: 'Trigger type: tag or push'
         required: false
         default: tag
+      admin-merge:
+        description: 'Fall back to admin merge when auto-merge is unavailable'
+        required: false
+        default: 'false'
+        type: boolean
+      allow-self-merge:
+        description: 'Allow admin merge on deepiri-cascade itself (deploys to prod)'
+        required: false
+        default: 'false'
+        type: boolean
 
 env:
   ORG: team-deepiri
@@ -67,11 +77,15 @@ jobs:
             TAG="${{ github.event.client_payload.tag }}"
             SHA="${{ github.event.client_payload.sha }}"
             TRIGGER="${{ github.event.client_payload.trigger }}"
+            ADMIN_MERGE="${{ github.event.client_payload.admin-merge }}"
+            ALLOW_SELF_MERGE="${{ github.event.client_payload.allow-self-merge }}"
           else
             REPO="${{ github.event.inputs.repo }}"
             TAG="${{ github.event.inputs.tag }}"
             SHA="${{ github.event.inputs.sha }}"
             TRIGGER="${{ github.event.inputs.trigger }}"
+            ADMIN_MERGE="${{ github.event.inputs.admin-merge }}"
+            ALLOW_SELF_MERGE="${{ github.event.inputs.allow-self-merge }}"
           fi
           if [ -z "$TRIGGER" ]; then
             if [ -n "$SHA" ]; then TRIGGER="push"; else TRIGGER="tag"; fi
@@ -80,6 +94,8 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "sha=$SHA" >> $GITHUB_OUTPUT
           echo "trigger=$TRIGGER" >> $GITHUB_OUTPUT
+          echo "admin_merge=$ADMIN_MERGE" >> $GITHUB_OUTPUT
+          echo "allow_self_merge=$ALLOW_SELF_MERGE" >> $GITHUB_OUTPUT
 
       - name: Run cascade
         env:
@@ -90,5 +106,11 @@ jobs:
             ARGS+=(--trigger push --sha "${{ steps.info.outputs.sha }}")
           else
             ARGS+=(--trigger tag --tag "${{ steps.info.outputs.tag }}")
+          fi
+          if [ "${{ steps.info.outputs.admin_merge }}" = "true" ]; then
+            ARGS+=(--admin-merge)
+          fi
+          if [ "${{ steps.info.outputs.allow_self_merge }}" = "true" ]; then
+            ARGS+=(--allow-self-merge)
           fi
           deepiri-cascade cascade "${ARGS[@]}"
