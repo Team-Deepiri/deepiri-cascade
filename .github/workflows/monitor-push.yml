@@ -159,7 +159,7 @@ jobs:
           SHA: ${{ matrix.sha }}
         run: |
           payload="$(jq -n --arg repo "$REPO" --arg sha "$SHA" \
-            '{event_type: "cascade-trigger", client_payload: {repo: $repo, sha: $sha, trigger: "push"}}')"
+            '{event_type: "cascade-trigger", client_payload: {repo: $repo, sha: $sha, trigger: "push", "admin-merge": true, "allow-self-merge": true}}')"
           curl -sSf -X POST \
             "https://api.github.com/repos/${ORG}/${CASCADE_REPO}/dispatches" \
             -H "Accept: application/vnd.github+json" \

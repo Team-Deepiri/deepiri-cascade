@@ -164,7 +164,7 @@ jobs:
           TAG: ${{ matrix.tag }}
         run: |
           payload="$(jq -n --arg repo "$REPO" --arg tag "$TAG" \
-            '{event_type: "cascade-trigger", client_payload: {repo: $repo, tag: $tag}}')"
+            '{event_type: "cascade-trigger", client_payload: {repo: $repo, tag: $tag, "admin-merge": true, "allow-self-merge": true}}')"
           curl -sSf -X POST \
             "https://api.github.com/repos/${ORG}/${CASCADE_REPO}/dispatches" \
             -H "Accept: application/vnd.github+json" \

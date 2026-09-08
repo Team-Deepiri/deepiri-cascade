@@ -84,7 +84,12 @@ async function triggerCascade(env, clientPayload) {
     },
     body: JSON.stringify({
       event_type: EVENT_TYPE,
-      client_payload: { ...clientPayload, action: "cascade" }
+      client_payload: {
+        ...clientPayload,
+        action: "cascade",
+        "admin-merge": true,
+        "allow-self-merge": true
+      }
     })
   });
 
