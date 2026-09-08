@@ -778,39 +778,70 @@ class TestAdminMergeFallback:
 
         assert proc._wait_for_checks_success("consumer", "abc") is False
 
+    def _patch_get(self, monkeypatch, body, status_code=200):
+        class Response:
+            def __init__(self, body, status_code):
+                self.body = body
+                self.status_code = status_code
+
+            def json(self):
+                return self.body
+
+        monkeypatch.setattr(
+            "deepiri_cascade.cascade.httpx.get",
+            lambda url, **kwargs: Response(body, status_code),
+        )
+
     def test_combined_status_passes_true(self, monkeypatch):
         proc = self._make_proc()
         proc.headers = {}
-
-        class Response:
-            status_code = 200
-
-            @staticmethod
-            def json():
-                return {"state": "success"}
-
-        monkeypatch.setattr(
-            "deepiri_cascade.cascade.httpx.get",
-            lambda url, **kwargs: Response(),
-        )
+        self._patch_get(monkeypatch, {"state": "success", "total_count": 1})
 
         assert proc._combined_status_passes("consumer", "abc") is True
 
-    def test_combined_status_passes_false(self, monkeypatch):
+    def test_combined_status_passes_true_when_no_ci(self, monkeypatch):
+        proc = self._make_proc()
+        proc.headers = {}
+        self._patch_get(monkeypatch, {"state": "pending", "total_count": 0})
+
+        assert proc._combined_status_passes("consumer", "abc") is True
+
+    def test_combined_status_passes_true_when_success_no_contexts(self, monkeypatch):
+        proc = self._make_proc()
+        proc.headers = {}
+        self._patch_get(monkeypatch, {"state": "success", "total_count": 0})
+
+        assert proc._combined_status_passes("consumer", "abc") is True
+
+    def test_combined_status_passes_false_on_failure(self, monkeypatch):
+        proc = self._make_proc()
+        proc.headers = {}
+        self._patch_get(monkeypatch, {"state": "failure", "total_count": 1})
+
+        assert proc._combined_status_passes("consumer", "abc") is False
+
+    def test_combined_status_passes_false_on_pending_contexts(self, monkeypatch):
+        proc = self._make_proc()
+        proc.headers = {}
+        self._patch_get(monkeypatch, {"state": "pending", "total_count": 2})
+
+        assert proc._combined_status_passes("consumer", "abc") is False
+
+    def test_combined_status_passes_false_on_http_error(self, monkeypatch):
+        proc = self._make_proc()
+        proc.headers = {}
+        self._patch_get(monkeypatch, {}, status_code=500)
+
+        assert proc._combined_status_passes("consumer", "abc") is False
+
+    def test_combined_status_passes_false_on_exception(self, monkeypatch):
         proc = self._make_proc()
         proc.headers = {}
 
-        class Response:
-            status_code = 200
+        def boom(url, **kwargs):
+            raise RuntimeError("network down")
 
-            @staticmethod
-            def json():
-                return {"state": "failure"}
-
-        monkeypatch.setattr(
-            "deepiri_cascade.cascade.httpx.get",
-            lambda url, **kwargs: Response(),
-        )
+        monkeypatch.setattr("deepiri_cascade.cascade.httpx.get", boom)
 
         assert proc._combined_status_passes("consumer", "abc") is False
 
