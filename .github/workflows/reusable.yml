@@ -9,6 +9,14 @@ on:
       tag:
         required: true
         type: string
+      admin-merge:
+        required: false
+        type: boolean
+        default: false
+      allow-self-merge:
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   cascade:
@@ -40,9 +48,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          deepiri-cascade cascade \
-            --repo "${{ inputs.repo }}" \
-            --tag "${{ inputs.tag }}" \
-            --org team-deepiri \
-            --bump-type patch \
-            --no-confirm
+          ARGS=(--repo "${{ inputs.repo }}" --tag "${{ inputs.tag }}"
+            --org team-deepiri --bump-type patch --no-confirm)
+          if [ "${{ inputs.admin-merge }}" = "true" ]; then
+            ARGS+=(--admin-merge)
+          fi
+          if [ "${{ inputs.allow-self-merge }}" = "true" ]; then
+            ARGS+=(--allow-self-merge)
+          fi
+          deepiri-cascade cascade "${ARGS[@]}"
