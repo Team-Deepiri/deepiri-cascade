@@ -16,16 +16,29 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "repo=${{ github.event.repository.name }}" >> $GITHUB_OUTPUT
 
-      - name: Trigger cascade
+      # A repository_dispatch sent with the default GITHUB_TOKEN does NOT start a
+      # new workflow run (GitHub's recursion guard), so mint the cascade GitHub
+      # App token instead -- same App the Cloudflare worker and monitors use.
+      - name: Mint cascade App token
+        id: app-token
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          GITHUB_APP_OWNER: Team-Deepiri
         run: |
-          curl -X POST https://api.github.com/repos/Team-Deepiri/deepiri-cascade/dispatches \
+          python -m pip install --quiet PyJWT cryptography httpx
+          python scripts/mint_github_app_token.py
+
+      - name: Trigger cascade
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ steps.tag.outputs.repo }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          payload="$(jq -n --arg repo "$REPO" --arg tag "$TAG" \
+            '{event_type: "cascade-trigger", client_payload: {repo: $repo, tag: $tag, "admin-merge": true, "allow-self-merge": true}}')"
+          curl -sSf -X POST https://api.github.com/repos/Team-Deepiri/deepiri-cascade/dispatches \
             -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: Bearer ${TOKEN}" \
             -H "Content-Type: application/json" \
-            -d '{
-              "event_type": "cascade-trigger",
-              "client_payload": {
-                "repo": "${{ steps.tag.outputs.repo }}",
-                "tag": "${{ steps.tag.outputs.tag }}"
-              }
-            }'
+            -d "$payload"

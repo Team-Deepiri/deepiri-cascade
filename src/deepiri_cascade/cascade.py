@@ -870,17 +870,53 @@ Auto-merge is enabled when required CI checks pass.
         return self._combined_status_passes(repo_name, head_sha)
 
     def _combined_status_passes(self, repo_name: str, head_sha: str) -> bool:
-        """Check the combined commit status (checks + statuses) is green."""
-        url = (
+        """Check the PR head commit's combined status + check runs are green.
+
+        GitHub reports a commit with NO statuses or check runs as combined
+        state ``pending`` (not ``success``), which would block admin merges
+        into repos that run no CI. So a commit with neither legacy statuses nor
+        check runs is treated as green; merges are only blocked by a genuine
+        failure/error or a pending report with actual contexts/check runs.
+        """
+        status_url = (
             f"https://api.github.com/repos/{self.org}/{repo_name}/commits/{head_sha}/status"
         )
         try:
-            response = httpx.get(url, headers=self.headers, timeout=15)
+            response = httpx.get(status_url, headers=self.headers, timeout=15)
             if response.status_code == 200:
-                return response.json().get("state") == "success"
+                status = response.json()
+                state = status.get("state")
+                if state in ("failure", "error"):
+                    return False
+                if state == "pending" and status.get("total_count", 0):
+                    return False
         except Exception:
-            pass
-        return False
+            return False
+
+        check_runs_url = (
+            f"https://api.github.com/repos/{self.org}/{repo_name}/commits/{head_sha}/check-runs"
+        )
+        try:
+            response = httpx.get(check_runs_url, headers=self.headers, timeout=15)
+            if response.status_code != 200:
+                return False
+            check_runs = response.json().get("check_runs", [])
+        except Exception:
+            return False
+        if not check_runs:
+            return True
+        for run in check_runs:
+            if run.get("status") in ("queued", "in_progress"):
+                return False
+            if run.get("conclusion") in (
+                "failure",
+                "cancelled",
+                "timed_out",
+                "action_required",
+                "startup_failure",
+            ):
+                return False
+        return True
 
     def _admin_merge_pull_request(self, repo_name: str, pr_number: int) -> bool:
         """Merge a pull request directly using admin privileges (REST API)."""
